@@ -1,0 +1,175 @@
+# frozen_string_literal: true
+
+require "spec_helper"
+
+RSpec.describe Alplus::Envelope do
+  let(:config) do
+    Alplus::Configuration.new.tap do |c|
+      c.key = "alp_p_test_key"
+      c.environment = "staging"
+      c.release = "v9.9.9"
+      c.app_dirs = [__dir__]
+    end
+  end
+
+  # Golden test: this exact shape must stay wire-compatible with the JS SDK
+  # (packages/sdk/src/core/observe/{client,envelope}.ts) and the Elixir SDK
+  # (issue #13) — the server's POST /e/errors envelope validation is the
+  # single accepted shape all three SDKs target (docs/BUILD.md §5).
+  it "builds the documented POST /e/errors envelope for a captured exception" do
+    exception = begin
+      raise ArgumentError, "bad thing happened"
+    rescue StandardError => e
+      e
+    end
+
+    item = described_class.exception_item(id: "err_01930000-0000-7000-8000-000000000000", exception: exception, config: config)
+    envelope = described_class.wrap(config: config, item: item)
+
+    expect(envelope).to match(
+      header: {
+        key: "alp_p_test_key",
+        sdk: { name: "alplus-ruby", version: Alplus::VERSION, platform: "ruby" },
+        sent_at: match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/)
+      },
+      items: [
+        {
+          id: "err_01930000-0000-7000-8000-000000000000",
+          type: "exception",
+          timestamp: match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/),
+          level: "error",
+          release: "v9.9.9",
+          environment: "staging",
+          mechanism: "generic",
+          exception: {
+            type: "ArgumentError",
+            value: "bad thing happened",
+            stacktrace: {
+              frames: array_including(
+                include(file: __FILE__, function: a_kind_of(String), lineno: a_kind_of(Integer), in_app: true)
+              )
+            }
+          }
+        }
+      ]
+    )
+  end
+
+  it "is JSON-serializable to the exact wire shape (round-trips through JSON with string keys)" do
+    exception = begin
+      raise "boom"
+    rescue StandardError => e
+      e
+    end
+
+    item = described_class.exception_item(id: "err_test", exception: exception, config: config)
+    envelope = described_class.wrap(config: config, item: item)
+    parsed = JSON.parse(JSON.generate(envelope))
+
+    expect(parsed.dig("header", "key")).to eq("alp_p_test_key")
+    expect(parsed.dig("items", 0, "id")).to eq("err_test")
+    expect(parsed.dig("items", 0, "exception", "type")).to eq("RuntimeError")
+  end
+
+  it "builds a message item without an exception key" do
+    item = described_class.message_item(id: "err_msg", message: "hello", config: config, level: "info")
+    expect(item).to match(
+      id: "err_msg",
+      type: "message",
+      timestamp: an_instance_of(String),
+      level: "info",
+      release: "v9.9.9",
+      environment: "staging",
+      mechanism: "generic",
+      message: "hello"
+    )
+    expect(item).not_to have_key(:exception)
+  end
+
+  it "omits stacktrace entirely when the exception has no backtrace" do
+    item = described_class.exception_item(id: "err_no_bt", exception: StandardError.new("no trace"), config: config)
+    expect(item[:exception]).not_to have_key(:stacktrace)
+  end
+
+  it "includes tags and context only when present, never as empty objects" do
+    item = described_class.message_item(id: "err_x", message: "m", config: config)
+    expect(item).not_to have_key(:tags)
+    expect(item).not_to have_key(:contexts)
+
+    tagged = described_class.message_item(id: "err_y", message: "m", config: config, tags: { "region" => "eu" }, context: { "order_id" => 42 })
+    expect(tagged[:tags]).to eq({ "region" => "eu" })
+    expect(tagged[:contexts]).to eq(extra: { "order_id" => 42 })
+  end
+
+  describe "per-field caps (an oversized field is trimmed, the event still sends)" do
+    it "drops trailing stack frames rather than the whole event" do
+      huge_message = "x" * 500
+      # Build far more frames than MAX_STACK_TRACE_CHARS can hold.
+      frames = Array.new(200) { { file: __FILE__, function: huge_message, lineno: 1, in_app: true } }
+
+      capped = described_class.cap_frames(frames, described_class::MAX_STACK_TRACE_CHARS)
+
+      expect(capped.length).to be < frames.length
+      expect(JSON.generate(capped).bytesize).to be <= described_class::MAX_STACK_TRACE_CHARS
+      expect(capped).not_to be_empty
+    end
+
+    it "replaces an oversized context with a truncation marker instead of a partial/unparseable string" do
+      huge_context = { extra: { blob: "x" * 20_000 } }
+
+      capped = described_class.cap_context(huge_context, described_class::MAX_CONTEXT_CHARS)
+
+      expect(capped).to eq(_truncated: true, _original_chars: JSON.generate(huge_context).bytesize)
+    end
+
+    it "leaves a context under budget untouched" do
+      small_context = { extra: { order_id: 42 } }
+      expect(described_class.cap_context(small_context, described_class::MAX_CONTEXT_CHARS)).to eq(small_context)
+    end
+
+    it "drops an oversized tags object entirely rather than send a truncated Hash" do
+      huge_tags = { "blob" => "x" * 10_000 }
+      expect(described_class.cap_tags(huge_tags, described_class::MAX_TAGS_CHARS)).to be_nil
+    end
+
+    it "keeps a tags object under budget" do
+      tags = { "region" => "eu" }
+      expect(described_class.cap_tags(tags, described_class::MAX_TAGS_CHARS)).to eq(tags)
+    end
+
+    it "caps breadcrumbs to the server ceiling, keeping the most recent" do
+      breadcrumbs = Array.new(150) { |i| { category: "nav", message: "step #{i}" } }
+
+      capped = described_class.cap_breadcrumbs(breadcrumbs, described_class::SERVER_MAX_BREADCRUMBS)
+
+      expect(capped.length).to eq(described_class::SERVER_MAX_BREADCRUMBS)
+      expect(capped.last[:message]).to eq("step 149")
+    end
+
+    it "caps an individual breadcrumb's message and category length" do
+      breadcrumbs = [{ category: "x" * 500, message: "y" * 5_000 }]
+
+      capped = described_class.cap_breadcrumbs(breadcrumbs, described_class::SERVER_MAX_BREADCRUMBS)
+
+      expect(capped.first[:category].length).to eq(described_class::MAX_BREADCRUMB_CATEGORY_CHARS)
+      expect(capped.first[:message].length).to eq(described_class::MAX_BREADCRUMB_MESSAGE_CHARS)
+    end
+
+    it "builds a full exception_item where an oversized stacktrace is trimmed, not dropped" do
+      exception = begin
+        raise "boom"
+      rescue StandardError => e
+        e
+      end
+      # Force frames far past the cap by stubbing Stack.frames_for.
+      giant_frames = Array.new(200) { { file: __FILE__, function: "x" * 100, lineno: 1, in_app: true } }
+      allow(Alplus::Stack).to receive(:frames_for).and_return(giant_frames)
+
+      item = described_class.exception_item(id: "err_cap", exception: exception, config: config)
+
+      expect(item[:exception]).to have_key(:stacktrace)
+      expect(item[:exception][:stacktrace][:frames].length).to be < giant_frames.length
+      expect(item[:exception][:stacktrace][:frames]).not_to be_empty
+    end
+  end
+end
