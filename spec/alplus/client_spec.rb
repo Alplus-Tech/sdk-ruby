@@ -66,6 +66,18 @@ RSpec.describe Alplus::Client do
       expect(client.transport.envelopes.length).to eq(1)
       expect(client.transport.envelopes.first[:items].first[:exception][:type]).to eq("RuntimeError")
     end
+
+    it "attaches a user: to a captured exception" do
+      client.capture_exception(RuntimeError.new("boom"), user: { id: "user_42", email: "dev@example.com" })
+      item = client.transport.envelopes.first[:items].first
+      expect(item[:user]).to eq(id: "user_42", email: "dev@example.com")
+    end
+
+    it "attaches a user: to a captured message" do
+      client.capture_message("hello", user: { id: "user_7" })
+      item = client.transport.envelopes.first[:items].first
+      expect(item[:user]).to eq(id: "user_7")
+    end
   end
 
   describe "the enabled flag" do

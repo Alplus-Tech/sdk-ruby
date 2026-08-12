@@ -22,6 +22,11 @@ RSpec.describe Alplus do
     it "never raises even if the exception argument is not an Exception" do
       expect { described_class.capture_exception("not an exception") }.not_to raise_error
     end
+
+    it "forwards user: onto the wire item" do
+      described_class.capture_exception(RuntimeError.new("boom"), user: { id: "user_1", email: "a@b.com" })
+      expect(described_class.test_transport.envelopes.first[:items].first[:user]).to eq(id: "user_1", email: "a@b.com")
+    end
   end
 
   describe ".capture_message" do

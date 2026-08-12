@@ -27,6 +27,14 @@ module Alplus
     SERVER_MAX_BREADCRUMBS = 100
     MAX_BREADCRUMB_MESSAGE_CHARS = 2_048
     MAX_BREADCRUMB_CATEGORY_CHARS = 128
+    # The server's `errorItemSchema.user` is `.strict()` with only `id`/
+    # `email` (packages/schemas/src/observe/error-envelope.ts) — an
+    # unrecognized key rejects the whole item, so `cap_user` below picks
+    # only these two rather than forwarding an arbitrary hash. The JS SDK
+    # passes `user` through uncapped (no `MAX_USER_*` there); this cap is
+    # an SDK-side addition for the same defensive-write-boundary discipline
+    # every other free-text field already gets here.
+    MAX_USER_FIELD_CHARS = 256
 
     module_function
 
@@ -41,22 +49,22 @@ module Alplus
       }
     end
 
-    def exception_item(id:, exception:, config:, level: "error", context: nil, tags: nil, breadcrumbs: nil, mechanism: "generic")
+    def exception_item(id:, exception:, config:, level: "error", context: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic")
       frames = Stack.frames_for(exception, app_dirs: config.app_dirs)
       exc = { type: exception.class.name, value: cap_text(exception.message.to_s, MAX_EXCEPTION_VALUE_CHARS) }
       capped_frames = cap_frames(frames, MAX_STACK_TRACE_CHARS)
       exc[:stacktrace] = { frames: capped_frames } unless capped_frames.empty?
 
-      base_item(id: id, type: "exception", level: level, config: config, mechanism: mechanism, context: context, tags: tags, breadcrumbs: breadcrumbs)
+      base_item(id: id, type: "exception", level: level, config: config, mechanism: mechanism, context: context, tags: tags, breadcrumbs: breadcrumbs, user: user)
         .merge(exception: exc)
     end
 
-    def message_item(id:, message:, config:, level: "info", context: nil, tags: nil, breadcrumbs: nil, mechanism: "generic")
-      base_item(id: id, type: "message", level: level, config: config, mechanism: mechanism, context: context, tags: tags, breadcrumbs: breadcrumbs)
+    def message_item(id:, message:, config:, level: "info", context: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic")
+      base_item(id: id, type: "message", level: level, config: config, mechanism: mechanism, context: context, tags: tags, breadcrumbs: breadcrumbs, user: user)
         .merge(message: cap_text(message.to_s, MAX_MESSAGE_CHARS))
     end
 
-    def base_item(id:, type:, level:, config:, mechanism:, context:, tags:, breadcrumbs:)
+    def base_item(id:, type:, level:, config:, mechanism:, context:, tags:, breadcrumbs:, user:)
       item = {
         id: id,
         type: type,
@@ -71,6 +79,8 @@ module Alplus
       item[:tags] = capped_tags if capped_tags
       capped_crumbs = cap_breadcrumbs(breadcrumbs, SERVER_MAX_BREADCRUMBS)
       item[:breadcrumbs] = capped_crumbs if capped_crumbs && !capped_crumbs.empty?
+      capped_user = cap_user(user)
+      item[:user] = capped_user if capped_user
       item.compact
     end
 
@@ -129,6 +139,23 @@ module Alplus
         end
       end
       frames.first(low)
+    end
+
+    # Builds the wire `user` object: only `id`/`email` (accepts either
+    # symbol or string keys from the caller), each length-capped, matching
+    # the server's `.strict()` `errorItemSchema.user` — any other key would
+    # get the whole item rejected, so unrecognized keys are dropped rather
+    # than forwarded. Returns `nil` for a `nil`/empty input, or if neither
+    # recognized key is present, so the caller can omit the wire key.
+    def cap_user(user)
+      return nil if user.nil? || user.empty?
+
+      id = user[:id] || user["id"]
+      email = user[:email] || user["email"]
+      built = {}
+      built[:id] = cap_text(id, MAX_USER_FIELD_CHARS) if id
+      built[:email] = cap_text(email, MAX_USER_FIELD_CHARS) if email
+      built.empty? ? nil : built
     end
 
     # Caps breadcrumb count to the server's own ceiling (keeping the most

@@ -18,15 +18,15 @@ module Alplus
 
     attr_reader :transport
 
-    def capture_exception(exception, level: "error", context: nil, tags: nil, breadcrumbs: nil, mechanism: "generic")
+    def capture_exception(exception, level: "error", context: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic")
       id = Id.generate_event_id
-      dispatch(id) { Envelope.exception_item(id: id, exception: exception, config: @config, level: level, context: context, tags: tags, breadcrumbs: breadcrumbs, mechanism: mechanism) }
+      dispatch(id) { Envelope.exception_item(id: id, exception: exception, config: @config, level: level, context: context, tags: tags, breadcrumbs: breadcrumbs, user: user, mechanism: mechanism) }
       id
     end
 
-    def capture_message(message, level: "info", context: nil, tags: nil, breadcrumbs: nil, mechanism: "generic")
+    def capture_message(message, level: "info", context: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic")
       id = Id.generate_event_id
-      dispatch(id) { Envelope.message_item(id: id, message: message, config: @config, level: level, context: context, tags: tags, breadcrumbs: breadcrumbs, mechanism: mechanism) }
+      dispatch(id) { Envelope.message_item(id: id, message: message, config: @config, level: level, context: context, tags: tags, breadcrumbs: breadcrumbs, user: user, mechanism: mechanism) }
       id
     end
 

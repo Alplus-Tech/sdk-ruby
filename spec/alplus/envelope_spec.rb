@@ -101,6 +101,52 @@ RSpec.describe Alplus::Envelope do
     expect(tagged[:contexts]).to eq(extra: { "order_id" => 42 })
   end
 
+  describe "user" do
+    it "puts the correct user object on the wire for a captured exception" do
+      exception = begin
+        raise "boom"
+      rescue StandardError => e
+        e
+      end
+
+      item = described_class.exception_item(id: "err_user", exception: exception, config: config, user: { id: "user_42", email: "dev@example.com" })
+
+      expect(item[:user]).to eq(id: "user_42", email: "dev@example.com")
+    end
+
+    it "puts the correct user object on the wire for a captured message" do
+      item = described_class.message_item(id: "err_user_msg", message: "m", config: config, user: { id: "user_1" })
+      expect(item[:user]).to eq(id: "user_1")
+    end
+
+    it "accepts string keys" do
+      item = described_class.message_item(id: "err_user_str", message: "m", config: config, user: { "id" => "user_9", "email" => "x@example.com" })
+      expect(item[:user]).to eq(id: "user_9", email: "x@example.com")
+    end
+
+    it "is omitted entirely when no user is given" do
+      item = described_class.message_item(id: "err_no_user", message: "m", config: config)
+      expect(item).not_to have_key(:user)
+    end
+
+    it "drops unrecognized keys — the server's user schema is .strict() with only id/email" do
+      item = described_class.message_item(id: "err_user_strict", message: "m", config: config, user: { id: "user_1", username: "shouldbedropped", ip_address: "1.2.3.4" })
+      expect(item[:user]).to eq(id: "user_1")
+    end
+
+    it "caps an oversized id/email rather than sending them unbounded" do
+      huge = "x" * 10_000
+      item = described_class.message_item(id: "err_user_cap", message: "m", config: config, user: { id: huge, email: huge })
+      expect(item[:user][:id].length).to eq(described_class::MAX_USER_FIELD_CHARS)
+      expect(item[:user][:email].length).to eq(described_class::MAX_USER_FIELD_CHARS)
+    end
+
+    it "is omitted when given an empty hash" do
+      item = described_class.message_item(id: "err_user_empty", message: "m", config: config, user: {})
+      expect(item).not_to have_key(:user)
+    end
+  end
+
   describe "per-field caps (an oversized field is trimmed, the event still sends)" do
     it "drops trailing stack frames rather than the whole event" do
       huge_message = "x" * 500
