@@ -12,10 +12,22 @@ module Alplus
   # joined/killed explicitly: Ruby terminates all non-main threads when the
   # process exits, so there is nothing to supervise for a short-lived
   # script or a `Rack::Handler` process to leak.
+  #
+  # One `Worker` instance is ONE independent delivery lane: its own
+  # `SizedQueue` and its own background thread, fixed to one `kind:`
+  # (`:error` or `:session`) for its whole lifetime (issue #12 fix). A
+  # PRIOR version routed both kinds through a single shared queue/thread —
+  # a stalled or slow `/e/errors` POST (up to ~20s across
+  # `Retry::MAX_ATTEMPTS` retries) head-of-line-blocked every queued
+  # session behind it, and a full queue during an error storm silently
+  # dropped the next session, exactly when crash-free data matters most.
+  # `Client` now owns two `Worker`s so error backpressure can never delay
+  # or drop session delivery, or vice versa.
   class Worker
-    def initialize(config, transport)
+    def initialize(config, transport, kind: :error)
       @config = config
       @transport = transport
+      @kind = kind
       @queue = SizedQueue.new(config.max_queue_size)
       @mutex = Mutex.new
       @thread = nil
@@ -32,8 +44,9 @@ module Alplus
       @outstanding = 0
     end
 
-    # Enqueues an envelope for background delivery. Returns `true` if
-    # queued, `false` if dropped because the queue is full. Never raises.
+    # Enqueues an envelope for background delivery on THIS worker's own
+    # lane (its `kind:`, fixed at construction). Returns `true` if queued,
+    # `false` if dropped because the queue is full. Never raises.
     def enqueue(envelope)
       @mutex.synchronize do
         @queue.push(envelope, true)
@@ -42,7 +55,7 @@ module Alplus
       ensure_thread_started
       true
     rescue ThreadError
-      @config.logger&.warn("[alplus] queue full (max #{@config.max_queue_size}); dropping event")
+      @config.logger&.warn("[alplus] #{@kind} queue full (max #{@config.max_queue_size}); dropping event")
       false
     end
 
@@ -81,7 +94,7 @@ module Alplus
       loop do
         envelope = @queue.pop
         begin
-          @transport.send_envelope(envelope)
+          @transport.send_envelope(envelope, kind: @kind)
         rescue StandardError => e
           @config.logger&.warn("[alplus] worker error: #{e.class}: #{e.message}")
         ensure

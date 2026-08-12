@@ -101,6 +101,47 @@ RSpec.describe Alplus::Envelope do
     expect(tagged[:contexts]).to eq(extra: { "order_id" => 42 })
   end
 
+  describe "context vs contexts (issue #17)" do
+    it "accepts a named contexts: map alongside the context: convenience" do
+      item = described_class.message_item(
+        id: "err_ctx", message: "m", config: config,
+        context: { order_id: 42 },
+        contexts: { runtime: { ruby: RUBY_VERSION } }
+      )
+
+      expect(item[:contexts]).to eq(extra: { order_id: 42 }, runtime: { ruby: RUBY_VERSION })
+    end
+
+    it "accepts contexts: alone, without a context: convenience key" do
+      item = described_class.message_item(id: "err_ctx2", message: "m", config: config, contexts: { request: { path: "/x" } })
+      expect(item[:contexts]).to eq(request: { path: "/x" })
+    end
+  end
+
+  describe "fingerprint (issue #17)" do
+    it "puts the fingerprint array on the wire when given" do
+      item = described_class.message_item(id: "err_fp", message: "m", config: config, fingerprint: %w[custom-group])
+      expect(item[:fingerprint]).to eq(%w[custom-group])
+    end
+
+    it "is omitted entirely when not given" do
+      item = described_class.message_item(id: "err_no_fp", message: "m", config: config)
+      expect(item).not_to have_key(:fingerprint)
+    end
+
+    it "caps entries at MAX_FINGERPRINT_ENTRIES, keeping the first ones" do
+      fingerprint = Array.new(30) { |i| "part-#{i}" }
+      item = described_class.message_item(id: "err_fp_many", message: "m", config: config, fingerprint: fingerprint)
+      expect(item[:fingerprint].length).to eq(described_class::MAX_FINGERPRINT_ENTRIES)
+      expect(item[:fingerprint].first).to eq("part-0")
+    end
+
+    it "caps an individual fingerprint entry's length" do
+      item = described_class.message_item(id: "err_fp_long", message: "m", config: config, fingerprint: ["x" * 500])
+      expect(item[:fingerprint].first.length).to eq(described_class::MAX_FINGERPRINT_CHARS)
+    end
+  end
+
   describe "user" do
     it "puts the correct user object on the wire for a captured exception" do
       exception = begin

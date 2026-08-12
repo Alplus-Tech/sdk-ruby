@@ -9,7 +9,7 @@ module Alplus
 
     attr_accessor :key, :endpoint, :environment, :release, :sample_rate,
                   :enabled, :test_mode, :app_dirs, :max_queue_size,
-                  :open_timeout, :read_timeout, :logger, :transport
+                  :open_timeout, :read_timeout, :logger, :transport, :sleeper
 
     def initialize
       @key = ENV["ALPLUS_KEY"]
@@ -25,6 +25,11 @@ module Alplus
       @read_timeout = 5
       @logger = nil
       @transport = nil
+      # Injection point for the default `Transport`'s retry backoff sleep
+      # (issue #15/#16 follow-up): overridable per-`Configuration` so a
+      # spec exercising `Alplus.capture_exception`/`.heartbeat` against a
+      # retried response never waits on real wall-clock backoff.
+      @sleeper = method(:sleep)
     end
 
     def valid?

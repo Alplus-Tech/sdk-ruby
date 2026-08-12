@@ -5,10 +5,15 @@ require_relative "alplus/id"
 require_relative "alplus/configuration"
 require_relative "alplus/stack"
 require_relative "alplus/envelope"
+require_relative "alplus/retry"
 require_relative "alplus/transport"
 require_relative "alplus/worker"
+require_relative "alplus/dedup"
+require_relative "alplus/scope"
+require_relative "alplus/session"
 require_relative "alplus/client"
 require_relative "alplus/rack_middleware"
+require_relative "alplus/heartbeat"
 
 # Error reporting for `POST /e/errors` on AL+ Observe. Mirrors the wire
 # contract of `@alplus/sdk` (TypeScript) and the Elixir SDK (see
@@ -72,6 +77,64 @@ module Alplus
       false
     end
 
+    # Pings AL+ Monitor's `GET|POST /h/:token` for cron/job liveness
+    # (issue #16): `state:` is `"start"`, `"finish"` (the default), or
+    # `"fail"`. Reuses the same retry/backoff as event delivery (`Retry`).
+    # Fail-safe: never raises into the caller, always returns `nil`.
+    def heartbeat(token, state: "finish")
+      Heartbeat.ping(token, state: state, config: configuration)
+      nil
+    rescue StandardError
+      nil
+    end
+
+    # Request-scoped scope ergonomics (issue #17): set once (typically at
+    # the top of a request, e.g. in a `before_action`) and applied to every
+    # `capture_exception`/`capture_message` call for the rest of the
+    # current thread/request. See `Scope`. Every setter is fail-safe.
+    def set_user(user)
+      Scope.current.set_user(user)
+      nil
+    rescue StandardError
+      nil
+    end
+
+    def set_tag(key, value)
+      Scope.current.set_tag(key, value)
+      nil
+    rescue StandardError
+      nil
+    end
+
+    def set_context(name, data)
+      Scope.current.set_context(name, data)
+      nil
+    rescue StandardError
+      nil
+    end
+
+    def add_breadcrumb(message: nil, category: nil, level: nil, data: nil, ts: nil)
+      Scope.current.add_breadcrumb(message: message, category: category, level: level, data: data, ts: ts)
+      nil
+    rescue StandardError
+      nil
+    end
+
+    # Closes the current thread's request-scoped `Session` (issue #12), if
+    # one is active (see `RackMiddleware`): reports it to
+    # `POST /e/sessions` via `Client#report_session`. A no-op if no session
+    # is active. Fail-safe: never raises. Not typically called directly —
+    # `RackMiddleware` calls this once `@app.call` returns or raises.
+    def close_session
+      session = Session.current
+      return nil unless session
+
+      client.report_session(session)
+      nil
+    rescue StandardError
+      nil
+    end
+
     # The active transport (real `Transport` or, under `config.test_mode`,
     # `TestTransport`). `Alplus.test_transport.envelopes` gives specs direct
     # access to every envelope captured so far.
@@ -80,10 +143,11 @@ module Alplus
     end
 
     # Test-only: drops the memoized client/configuration so the next access
-    # rebuilds them. Not needed in production code.
+    # rebuilds them, and clears dedup state. Not needed in production code.
     def reset!
       CLIENT_MUTEX.synchronize { @client = nil }
       @configuration = nil
+      Dedup.reset!
     end
   end
 end

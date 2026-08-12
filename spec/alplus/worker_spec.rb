@@ -54,6 +54,36 @@ RSpec.describe Alplus::Worker do
     end
   end
 
+  describe "independent lanes (issue #12 fix)" do
+    it "a full :error worker's queue never affects a separate :session worker's own queue" do
+      error_worker = described_class.new(config, transport, kind: :error)
+      session_worker = described_class.new(config, transport, kind: :session)
+      allow(error_worker).to receive(:ensure_thread_started)
+      allow(session_worker).to receive(:ensure_thread_started)
+
+      error_worker.enqueue({ id: "1" })
+      error_worker.enqueue({ id: "2" })
+      expect(error_worker.enqueue({ id: "overflow" })).to be false # error queue (size 2) is now full
+
+      expect(session_worker.enqueue({ id: "session-1" })).to be true
+      expect(session_worker.queue_size).to eq(1)
+    end
+
+    it "sends each kind to Transport#send_envelope with its own kind:, never the other's" do
+      error_worker = described_class.new(config, transport, kind: :error)
+      session_worker = described_class.new(config, transport, kind: :session)
+
+      error_worker.enqueue({ id: "error-1" })
+      session_worker.enqueue({ id: "session-1" })
+
+      # Real background threads this time (not stubbed): give them a moment to drain.
+      sleep 0.05
+
+      expect(transport).to have_received(:send_envelope).with({ id: "error-1" }, kind: :error)
+      expect(transport).to have_received(:send_envelope).with({ id: "session-1" }, kind: :session)
+    end
+  end
+
   describe "#flush" do
     it "waits for a real in-flight send to finish before reporting idle (TOCTOU fix)" do
       gate = Queue.new

@@ -37,4 +37,98 @@ RSpec.describe Alplus::RackMiddleware do
     expect { middleware.call({}) }.to raise_error(SystemExit)
     expect(Alplus.test_transport.envelopes).to be_empty
   end
+
+  describe "session lifecycle (issue #12)" do
+    after { Thread.current[:alplus_session] = nil }
+
+    it "reports a healthy session when the app completes without a captured error" do
+      ok_app = ->(_env) { [200, {}, ["ok"]] }
+      middleware = described_class.new(ok_app)
+
+      middleware.call({})
+
+      expect(Alplus.test_transport.session_envelopes.length).to eq(1)
+      item = Alplus.test_transport.session_envelopes.first[:items].first
+      expect(item[:status]).to eq("healthy")
+      expect(item[:id]).to start_with("ses_")
+      expect(Thread.current[:alplus_session]).to be_nil
+    end
+
+    it "reports an errored session when a handled error is captured during the request" do
+      app = lambda { |_env|
+        Alplus.capture_exception(RuntimeError.new("handled"))
+        [200, {}, ["ok"]]
+      }
+      middleware = described_class.new(app)
+
+      middleware.call({})
+
+      item = Alplus.test_transport.session_envelopes.first[:items].first
+      expect(item[:status]).to eq("errored")
+    end
+
+    it "reports a crashed session, not merely errored, when the app raises unhandled" do
+      raising_app = ->(_env) { raise "boom from the app" }
+      middleware = described_class.new(raising_app)
+
+      expect { middleware.call({}) }.to raise_error(RuntimeError)
+
+      item = Alplus.test_transport.session_envelopes.first[:items].first
+      expect(item[:status]).to eq("crashed")
+    end
+
+    it "does not leak a session from one request into the next on a reused thread" do
+      call_count = 0
+      seen_session_in_second_request = :not_checked
+      app = lambda { |_env|
+        call_count += 1
+        seen_session_in_second_request = Alplus::Session.current.status if call_count == 2
+        [200, {}, ["ok"]]
+      }
+      middleware = described_class.new(app)
+
+      middleware.call({}) # request one: healthy session closes and clears
+      middleware.call({}) # request two: must start fresh, not see request one's closed session
+
+      expect(seen_session_in_second_request).to eq(:healthy)
+    end
+  end
+
+  describe "scope isolation across requests on a reused thread (issue #17)" do
+    after { Thread.current[:alplus_scope] = nil }
+
+    it "does not leak Alplus.set_user from one request into the next on the same thread" do
+      seen_user_in_second_request = :not_set
+      call_count = 0
+      app = lambda { |_env|
+        call_count += 1
+        if call_count == 1
+          Alplus.set_user(id: "request-one")
+        else
+          seen_user_in_second_request = Alplus::Scope.current.snapshot[:user]
+        end
+        [200, {}, ["ok"]]
+      }
+      middleware = described_class.new(app)
+
+      middleware.call({}) # request one: sets a user
+      middleware.call({}) # request two, same thread: must start with no user
+
+      expect(seen_user_in_second_request).to be_nil
+    end
+
+    it "the scope is empty at the start of a fresh request" do
+      seen_user = nil
+      app = lambda { |_env|
+        seen_user = Alplus::Scope.current.snapshot[:user]
+        [200, {}, ["ok"]]
+      }
+      middleware = described_class.new(app)
+
+      Alplus::Scope.current.set_user(id: "leftover-from-outside-any-request")
+      middleware.call({})
+
+      expect(seen_user).to be_nil
+    end
+  end
 end

@@ -35,6 +35,10 @@ module Alplus
     # an SDK-side addition for the same defensive-write-boundary discipline
     # every other free-text field already gets here.
     MAX_USER_FIELD_CHARS = 256
+    # Mirrors the server's `errorItemSchema.fingerprint`
+    # (`z.array(z.string().max(256)).min(1).max(16)`, issue #17).
+    MAX_FINGERPRINT_ENTRIES = 16
+    MAX_FINGERPRINT_CHARS = 256
 
     module_function
 
@@ -49,22 +53,44 @@ module Alplus
       }
     end
 
-    def exception_item(id:, exception:, config:, level: "error", context: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic")
+    # Builds a `POST /e/sessions` wire item (issue #12) from an
+    # `Alplus::Session`. Carries no PII: `session.id` is opaque and used
+    # server-side only for in-window ingest dedup, then discarded (never
+    # stored raw) — matching `Alplus.Observe.SessionEnvelope`, the server
+    # parser.
+    def session_item(session:, config:)
+      {
+        id: session.id,
+        status: session.status.to_s,
+        started_at: session.started_at.iso8601,
+        duration_ms: ((Time.now.utc - session.started_at) * 1000).round,
+        release: config.release,
+        environment: config.environment
+      }.compact
+    end
+
+    def exception_item(id:, exception:, config:, level: "error", context: nil, contexts: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic", fingerprint: nil)
       frames = Stack.frames_for(exception, app_dirs: config.app_dirs)
       exc = { type: exception.class.name, value: cap_text(exception.message.to_s, MAX_EXCEPTION_VALUE_CHARS) }
       capped_frames = cap_frames(frames, MAX_STACK_TRACE_CHARS)
       exc[:stacktrace] = { frames: capped_frames } unless capped_frames.empty?
 
-      base_item(id: id, type: "exception", level: level, config: config, mechanism: mechanism, context: context, tags: tags, breadcrumbs: breadcrumbs, user: user)
+      base_item(id: id, type: "exception", level: level, config: config, mechanism: mechanism, context: context, contexts: contexts, tags: tags, breadcrumbs: breadcrumbs, user: user, fingerprint: fingerprint)
         .merge(exception: exc)
     end
 
-    def message_item(id:, message:, config:, level: "info", context: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic")
-      base_item(id: id, type: "message", level: level, config: config, mechanism: mechanism, context: context, tags: tags, breadcrumbs: breadcrumbs, user: user)
+    def message_item(id:, message:, config:, level: "info", context: nil, contexts: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic", fingerprint: nil)
+      base_item(id: id, type: "message", level: level, config: config, mechanism: mechanism, context: context, contexts: contexts, tags: tags, breadcrumbs: breadcrumbs, user: user, fingerprint: fingerprint)
         .merge(message: cap_text(message.to_s, MAX_MESSAGE_CHARS))
     end
 
-    def base_item(id:, type:, level:, config:, mechanism:, context:, tags:, breadcrumbs:, user:)
+    # `context:` is the free-text convenience that folds into
+    # `contexts.extra` (and, per capture, always REPLACES whatever ambient
+    # `extra` context the caller's scope carried — it does not deep-merge
+    # with it); `contexts:` is the arbitrary named-map form. Both fold into
+    # one `contexts` wire key, matching the JS SDK and fixing this SDK's
+    # previous `context`-only shape (issue #17).
+    def base_item(id:, type:, level:, config:, mechanism:, context:, contexts:, tags:, breadcrumbs:, user:, fingerprint:)
       item = {
         id: id,
         type: type,
@@ -74,13 +100,17 @@ module Alplus
         environment: config.environment,
         mechanism: mechanism
       }
-      item[:contexts] = cap_context({ extra: context }, MAX_CONTEXT_CHARS) if context && !context.empty?
+      named_contexts = contexts ? contexts.dup : {}
+      named_contexts[:extra] = context if context && !context.empty?
+      item[:contexts] = cap_context(named_contexts, MAX_CONTEXT_CHARS) unless named_contexts.empty?
       capped_tags = cap_tags(tags, MAX_TAGS_CHARS)
       item[:tags] = capped_tags if capped_tags
       capped_crumbs = cap_breadcrumbs(breadcrumbs, SERVER_MAX_BREADCRUMBS)
       item[:breadcrumbs] = capped_crumbs if capped_crumbs && !capped_crumbs.empty?
       capped_user = cap_user(user)
       item[:user] = capped_user if capped_user
+      capped_fingerprint = cap_fingerprint(fingerprint)
+      item[:fingerprint] = capped_fingerprint if capped_fingerprint
       item.compact
     end
 
@@ -169,6 +199,16 @@ module Alplus
         crumb[:category] = cap_text(crumb[:category], MAX_BREADCRUMB_CATEGORY_CHARS) if crumb[:category]
         crumb
       end
+    end
+
+    # Caps the custom fingerprint override to the server's own bounds:
+    # at most `MAX_FINGERPRINT_ENTRIES` entries, each at most
+    # `MAX_FINGERPRINT_CHARS` characters. Returns `nil` for a `nil`/empty
+    # input so the caller can omit the wire key.
+    def cap_fingerprint(fingerprint)
+      return nil if fingerprint.nil? || fingerprint.empty?
+
+      fingerprint.first(MAX_FINGERPRINT_ENTRIES).map { |part| cap_text(part.to_s, MAX_FINGERPRINT_CHARS) }
     end
   end
 end

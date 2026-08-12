@@ -11,7 +11,12 @@ RSpec.describe Alplus::Transport do
       c.read_timeout = 1
     end
   end
-  let(:transport) { described_class.new(config) }
+  # A no-op sleeper: retry/backoff behavior is asserted on its own below by
+  # inspecting what it was called with, never by actually waiting on real
+  # wall-clock time.
+  let(:sleeper_calls) { [] }
+  let(:sleeper) { ->(seconds) { sleeper_calls << seconds } }
+  let(:transport) { described_class.new(config, sleeper: sleeper) }
   let(:envelope) { { header: { key: config.key }, items: [{ id: "err_1" }] } }
 
   it "posts to POST /e/errors with a Bearer Authorization header and JSON content-type" do
@@ -51,5 +56,57 @@ RSpec.describe Alplus::Transport do
     huge_envelope = { items: [{ id: "err_1", message: "x" * 2_000_000 }] }
     expect(transport.send_envelope(huge_envelope)).to eq(:oversized)
     expect(a_request(:post, "https://ingest.example.test/e/errors")).not_to have_been_made
+  end
+
+  describe "retry (issue #15)" do
+    it "retries a transient 5xx and delivers the envelope on the next attempt" do
+      stub = stub_request(:post, "https://ingest.example.test/e/errors")
+             .to_return({ status: 503 }, { status: 202 })
+
+      expect(transport.send_envelope(envelope)).to eq(:sent)
+      expect(stub).to have_been_requested.times(2)
+      expect(sleeper_calls.length).to eq(1)
+    end
+
+    it "gives up after 3 total attempts against a persistent 5xx" do
+      stub = stub_request(:post, "https://ingest.example.test/e/errors").to_return(status: 500)
+
+      expect(transport.send_envelope(envelope)).to eq(:rejected)
+      expect(stub).to have_been_requested.times(3)
+      expect(sleeper_calls.length).to eq(2)
+    end
+
+    it "does not retry a permanent 404 (unrecognized route)" do
+      stub = stub_request(:post, "https://ingest.example.test/e/errors").to_return(status: 404)
+
+      expect(transport.send_envelope(envelope)).to eq(:rejected)
+      expect(stub).to have_been_requested.times(1)
+      expect(sleeper_calls).to be_empty
+    end
+
+    it "does not retry a permanent 401 (bad key)" do
+      stub_request(:post, "https://ingest.example.test/e/errors").to_return(status: 401)
+
+      expect(transport.send_envelope(envelope)).to eq(:rejected)
+      expect(sleeper_calls).to be_empty
+    end
+
+    it "honors a 429's Retry-After instead of the default backoff, delivering on retry" do
+      stub = stub_request(:post, "https://ingest.example.test/e/errors")
+             .to_return({ status: 429, headers: { "Retry-After" => "7" } }, { status: 202 })
+
+      expect(transport.send_envelope(envelope)).to eq(:sent)
+      expect(stub).to have_been_requested.times(2)
+      expect(sleeper_calls).to eq([7.0])
+    end
+
+    it "caps an oversized Retry-After at 30 seconds" do
+      stub_request(:post, "https://ingest.example.test/e/errors")
+        .to_return({ status: 429, headers: { "Retry-After" => "9999" } }, { status: 202 })
+
+      transport.send_envelope(envelope)
+
+      expect(sleeper_calls).to eq([30.0])
+    end
   end
 end

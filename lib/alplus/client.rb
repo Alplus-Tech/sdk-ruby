@@ -10,40 +10,151 @@ module Alplus
   # #14 story 8). The event id is always generated and returned first, so a
   # caller can show "reference id err_..." even if the event was dropped.
   class Client
-    def initialize(config)
+    # `sleeper:` is forwarded to the default `Transport` (never used when
+    # `config.transport`/`config.test_mode` supply a different one) purely
+    # as a test seam: with the real `Kernel#sleep`, a spec exercising a
+    # retried send would otherwise wait on real backoff wall-clock time.
+    # Defaults to `config.sleeper` so `Alplus.configure { |c| c.sleeper = ... }`
+    # reaches the module-level singleton client too, not just a directly
+    # constructed `Client.new`.
+    def initialize(config, sleeper: config.sleeper)
       @config = config
-      @transport = config.transport || (config.test_mode ? TestTransport.new : Transport.new(config))
-      @worker = Worker.new(config, @transport)
+      @transport = config.transport || (config.test_mode ? TestTransport.new : Transport.new(config, sleeper: sleeper))
+      @worker = Worker.new(config, @transport, kind: :error)
+      # A SEPARATE worker (own queue, own thread) from `@worker` (issue
+      # #12 fix): see `Worker`'s class doc for why sharing one lane with
+      # error delivery was a defect (head-of-line blocking + silent drops
+      # under an error storm, exactly when crash-free data matters).
+      @session_worker = Worker.new(config, @transport, kind: :session)
     end
 
     attr_reader :transport
 
-    def capture_exception(exception, level: "error", context: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic")
-      id = Id.generate_event_id
-      dispatch(id) { Envelope.exception_item(id: id, exception: exception, config: @config, level: level, context: context, tags: tags, breadcrumbs: breadcrumbs, user: user, mechanism: mechanism) }
+    # The enabled/sampled gate runs BEFORE dedup registration (issue #15
+    # defect): a sampled-out or disabled capture must not occupy the
+    # dedup slot, or it would suppress the NEXT (real) in-window capture
+    # of the same error.
+    #
+    # Dedup (issue #15) then runs BEFORE the scope merge / envelope build:
+    # the same exception object captured twice within the dedup window
+    # (e.g. by `RackMiddleware` auto-capture and a manual rescue further up
+    # the stack) returns the first call's id and is never re-queued — see
+    # `Dedup`.
+    #
+    # `contexts:`/`fingerprint:` and the ambient `Scope` (`set_user`,
+    # `set_tag`, `set_context`, `add_breadcrumb`) are issue #17: an explicit
+    # per-call `user:`/`tags:`/`contexts:`/`breadcrumbs:` here wins over
+    # whatever the ambient scope carries, field-by-field — see
+    # `ScopeMerge.merge`. `user:` defaults to the `Alplus::UNSET` sentinel,
+    # not `nil`, so a caller CAN pass `user: nil` to explicitly clear the
+    # ambient user for one capture.
+    def capture_exception(exception, level: "error", context: nil, contexts: nil, tags: nil, breadcrumbs: nil, user: Alplus::UNSET, mechanism: "generic", fingerprint: nil)
+      mark_session_outcome(level)
+      fresh_id = Id.generate_event_id
+      return fresh_id unless enabled?
+
+      resolved = Dedup.resolve(exception, fresh_id)
+      return resolved[:id] if resolved[:duplicate]
+
+      id = resolved[:id]
+      dispatch(id) { build_item(:exception_item, exception: exception, id: id, level: level, context: context, contexts: contexts, tags: tags, breadcrumbs: breadcrumbs, user: user, mechanism: mechanism, fingerprint: fingerprint) }
       id
     end
 
-    def capture_message(message, level: "info", context: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic")
+    def capture_message(message, level: "info", context: nil, contexts: nil, tags: nil, breadcrumbs: nil, user: Alplus::UNSET, mechanism: "generic", fingerprint: nil)
+      mark_session_outcome(level)
       id = Id.generate_event_id
-      dispatch(id) { Envelope.message_item(id: id, message: message, config: @config, level: level, context: context, tags: tags, breadcrumbs: breadcrumbs, user: user, mechanism: mechanism) }
+      return id unless enabled?
+
+      dispatch(id) { build_item(:message_item, message: message, id: id, level: level, context: context, contexts: contexts, tags: tags, breadcrumbs: breadcrumbs, user: user, mechanism: mechanism, fingerprint: fingerprint) }
       id
     end
 
+    # Flushes BOTH delivery lanes (issue #12: error and session are
+    # independent workers). A slow/stuck error lane still bounds this call
+    # by `timeout` for the session lane's own drain -- each `Worker#flush`
+    # call gets the full `timeout` budget rather than splitting it, since a
+    # caller flushing wants both drained, not a race between them.
     def flush(timeout: 2)
-      @worker.flush(timeout: timeout)
+      error_flushed = @worker.flush(timeout: timeout)
+      session_flushed = @session_worker.flush(timeout: timeout)
+      error_flushed && session_flushed
     rescue StandardError
+      false
+    end
+
+    # Reports a closed `Session` (issue #12) to `POST /e/sessions`, on its
+    # OWN background `Worker` (own queue, own thread) so a slow/failing
+    # `/e/errors` delivery can never delay or drop a queued session, or
+    # vice versa -- see `Worker`'s class doc. Unlike `capture_exception`/
+    # `capture_message`, never sampled or deduped — an accurate crash-free
+    # percentage needs every session counted, not a sample of them. Only
+    # gated on `config.valid?` (configured + enabled). Fail-safe: never
+    # raises.
+    def report_session(session)
+      return false unless @config.valid?
+
+      envelope = Envelope.wrap(config: @config, item: Envelope.session_item(session: session, config: @config))
+
+      if @config.test_mode
+        @transport.send_envelope(envelope, kind: :session)
+      else
+        @session_worker.enqueue(envelope)
+      end
+    rescue StandardError => e
+      @config.logger&.warn("[alplus] session report failed internally; dropped: #{e.class}: #{e.message}")
       false
     end
 
     private
 
-    # `id` is unused directly but kept as a named parameter for readability
-    # at call sites and future correlation logging.
-    def dispatch(_id)
-      return unless @config.valid?
-      return unless @config.sampled?
+    # Any `"error"`/`"fatal"`-level capture during the current request
+    # marks its `Session` (at least) `:errored` (issue #12) — a no-op if
+    # the session is already `:crashed`, or if no session is active (e.g.
+    # a background job, not a request under `RackMiddleware`). Runs
+    # BEFORE the `enabled?`/sampling gate below: whether or not this
+    # particular capture gets sent to `/e/errors`, the request genuinely
+    # did produce a handled error.
+    def mark_session_outcome(level)
+      Session.current&.mark_errored if %w[error fatal].include?(level.to_s)
+    end
 
+    # Single evaluation point for "would this capture actually be sent":
+    # `config.sampled?` draws a random number, so it must be called
+    # exactly once per capture — calling it again later (e.g. inside
+    # `dispatch`) could draw a different result than what already gated
+    # dedup registration.
+    def enabled?
+      @config.valid? && @config.sampled?
+    rescue StandardError
+      false
+    end
+
+    # Merges the ambient `Scope` with this call's explicit overrides, then
+    # delegates to `Envelope.exception_item`/`Envelope.message_item`.
+    def build_item(builder, id:, level:, context:, contexts:, tags:, breadcrumbs:, user:, mechanism:, fingerprint:, **item_args)
+      merged = ScopeMerge.merge(ambient: Scope.current.snapshot, user: user, tags: tags, contexts: contexts, breadcrumbs: breadcrumbs)
+      Envelope.public_send(
+        builder,
+        id: id,
+        config: @config,
+        level: level,
+        context: context,
+        contexts: merged[:contexts].empty? ? nil : merged[:contexts],
+        tags: merged[:tags].empty? ? nil : merged[:tags],
+        breadcrumbs: merged[:breadcrumbs].empty? ? nil : merged[:breadcrumbs],
+        user: merged[:user],
+        mechanism: mechanism,
+        fingerprint: fingerprint,
+        **item_args
+      )
+    end
+
+    # `id` is unused directly but kept as a named parameter for readability
+    # at call sites and future correlation logging. The enabled/sampled
+    # gate already ran in `capture_exception`/`capture_message` before
+    # dedup registration, so it is not repeated here.
+    def dispatch(_id)
       item = yield
       envelope = Envelope.wrap(config: @config, item: item)
 

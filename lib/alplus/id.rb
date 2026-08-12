@@ -35,5 +35,13 @@ module Alplus
     def generate_event_id
       "err_#{uuidv7}"
     end
+
+    # Generates a `ses_`-prefixed UUIDv7 session id for the
+    # `POST /e/sessions` wire protocol (issue #12). Opaque and used only
+    # for in-window ingest dedup — never persisted past that, never a PII
+    # carrier.
+    def generate_session_id
+      "ses_#{uuidv7}"
+    end
   end
 end
