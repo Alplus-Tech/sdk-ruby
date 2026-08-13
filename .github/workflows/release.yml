@@ -1,0 +1,48 @@
+# Release for alplus-ruby to RubyGems, destined for Alplus-Tech/sdk-ruby.
+# Manual or tag-driven only; a product change can never publish an SDK.
+#
+# Publishing uses RubyGems trusted publishing (OIDC) via rubygems/release-gem --
+# the registry's preferred mechanism, no long-lived GEM_HOST_API_KEY. Configure
+# alplus-ruby's trusted publisher on RubyGems to accept Alplus-Tech/sdk-ruby +
+# this workflow.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write # RubyGems trusted publishing (OIDC)
+
+env:
+  CONTRACT_REF: contract-v1.0.0
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the pinned contract
+        uses: actions/checkout@v4
+        with:
+          repository: Alplus-Tech/alplus
+          ref: ${{ env.CONTRACT_REF }}
+          token: ${{ secrets.CONTRACT_REPO_TOKEN }}
+          sparse-checkout: sdks/contract
+          path: .contract-src
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      - name: Verify before publish
+        env:
+          ALPLUS_CONTRACT_DIR: ${{ github.workspace }}/.contract-src/sdks/contract
+        run: bundle exec rspec
+
+      # Builds and pushes to RubyGems using trusted publishing (OIDC).
+      - uses: rubygems/release-gem@v1

@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "json"
+require "digest"
 
 # Top-level (unnamespaced) so `.class.name` renders the bare
 # "ContractTestError" the golden fixture expects -- matching the Elixir
@@ -19,7 +20,33 @@ RSpec.describe "golden envelope contract (issue #18)" do
   # where the frames came from, so calling them directly with the literal
   # canonical frames exercises the same capping/shape code `exception_item`
   # itself uses, without requiring an unreproducible real stack trace.
-  let(:contract_dir) { File.expand_path("../../../contract", __dir__) }
+  # The golden contract is owned by the AL+ product (Alplus-Tech/alplus) and
+  # consumed as an explicit, immutable input (issue #26): ALPLUS_CONTRACT_DIR
+  # points at a checkout of `sdks/contract` at the pinned contract tag. There is
+  # no monorepo-relative fallback -- an absent variable fails loudly.
+  contract_version = "1.0.0"
+
+  let(:contract_dir) do
+    dir = ENV["ALPLUS_CONTRACT_DIR"]
+    if dir.nil? || dir.empty?
+      raise "ALPLUS_CONTRACT_DIR is not set. Point it at a checkout of sdks/contract " \
+            "at the contract-v#{contract_version} tag (owned by Alplus-Tech/alplus), then rerun."
+    end
+
+    manifest = JSON.parse(File.read(File.join(dir, "manifest.json")))
+    unless manifest["version"] == contract_version
+      raise "contract version mismatch: pinned #{contract_version}, got #{manifest["version"]}"
+    end
+
+    manifest["items"].each do |name, expected|
+      actual = "sha256:#{Digest::SHA256.hexdigest(File.read(File.join(dir, name)))}"
+      unless actual == expected
+        raise "contract checksum mismatch for #{name}: expected #{expected}, got #{actual}"
+      end
+    end
+
+    dir
+  end
   let(:non_deterministic_keys) { %i[id timestamp started_at duration_ms] }
 
   let(:config) do
