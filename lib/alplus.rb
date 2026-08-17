@@ -12,7 +12,9 @@ require_relative "alplus/worker"
 require_relative "alplus/dedup"
 require_relative "alplus/scope"
 require_relative "alplus/session"
+require_relative "alplus/pending_window"
 require_relative "alplus/client"
+require_relative "alplus/logger_breadcrumbs"
 require_relative "alplus/rack_middleware"
 require_relative "alplus/heartbeat"
 
@@ -56,6 +58,13 @@ module Alplus
       return @client if @client
 
       CLIENT_MUTEX.synchronize { @client ||= Client.new(configuration) }
+    end
+
+    # The memoized client if one exists, without constructing it. The
+    # log-breadcrumb hook (issue #47) uses this: a boot-time log line must
+    # not force client construction before the host finishes configuring.
+    def initialized_client
+      @client
     end
 
     def capture_exception(exception, **options)

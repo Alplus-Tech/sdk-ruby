@@ -26,6 +26,9 @@ module Alplus
       # error delivery was a defect (head-of-line blocking + silent drops
       # under an error storm, exactly when crash-free data matters).
       @session_worker = Worker.new(config, @transport, kind: :session)
+
+      @pending_window =
+        PendingWindow.new(config.resolved_post_error_log_window_ms) { |item| deliver_item(item) }
     end
 
     attr_reader :transport
@@ -77,11 +80,20 @@ module Alplus
     # call gets the full `timeout` budget rather than splitting it, since a
     # caller flushing wants both drained, not a race between them.
     def flush(timeout: 2)
+      # Seal the post-error log window first: flush means "send now with
+      # whatever after-lines were collected so far", never "wait".
+      @pending_window.seal_all!
       error_flushed = @worker.flush(timeout: timeout)
       session_flushed = @session_worker.flush(timeout: timeout)
       error_flushed && session_flushed
     rescue StandardError
       false
+    end
+
+    # Offers a log-line breadcrumb to every exception item currently inside
+    # its post-error log window on this thread (issue #47). Never raises.
+    def notify_log_breadcrumb(crumb)
+      @pending_window.notify_log_breadcrumb(crumb)
     end
 
     # Reports a closed `Session` (issue #12) to `POST /e/sessions`, on its
@@ -161,6 +173,18 @@ module Alplus
       item = apply_before_send(item)
       return unless item
 
+      if item[:type] == "exception" && @pending_window.enabled?
+        # Post-error log window (issue #47): the item lingers so log lines
+        # written just after the error join it before delivery.
+        @pending_window.hold(item)
+      else
+        deliver_item(item)
+      end
+    rescue StandardError => e
+      @config.logger&.warn("[alplus] capture failed internally; event dropped: #{e.class}: #{e.message}")
+    end
+
+    def deliver_item(item)
       envelope = Envelope.wrap(config: @config, item: item)
 
       if @config.test_mode
@@ -169,7 +193,7 @@ module Alplus
         @worker.enqueue(envelope)
       end
     rescue StandardError => e
-      @config.logger&.warn("[alplus] capture failed internally; event dropped: #{e.class}: #{e.message}")
+      @config.logger&.warn("[alplus] delivery failed internally; event dropped: #{e.class}: #{e.message}")
     end
 
     # Exception class name, or the name of any ancestor, matches

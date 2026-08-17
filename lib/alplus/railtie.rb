@@ -46,6 +46,13 @@ module Alplus
 
       Alplus::NotificationsSubscriber.install!
 
+      # Log-line breadcrumbs (issue #47). `config.after_initialize` rather
+      # than here: `Rails.logger` is finalized (BroadcastLogger assembled,
+      # taggers applied) only after the framework initializers run.
+      app.config.after_initialize do
+        Alplus::LoggerBreadcrumbs.attach(::Rails.logger) if ::Rails.logger
+      end
+
       # Install the optional job integrations HERE, not at gem-require time
       # in `alplus.rb`. By the time this initializer runs, Bundler has
       # loaded every gem and Rails has booted its frameworks, so require

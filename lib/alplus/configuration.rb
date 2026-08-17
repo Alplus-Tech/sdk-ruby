@@ -11,7 +11,17 @@ module Alplus
                   :enabled, :test_mode, :app_dirs, :max_queue_size,
                   :open_timeout, :read_timeout, :logger, :transport, :sleeper,
                   :before_send, :scrub_fields, :excluded_exceptions, :context_lines,
-                  :breadcrumbs_enabled
+                  :breadcrumbs_enabled, :logger_breadcrumbs_enabled,
+                  :post_error_log_window_ms
+
+    # The window `Client` actually uses: the explicit setting when given,
+    # otherwise 0 in test mode (synchronous delivery stays synchronous for
+    # every spec that does not opt in) and 2000 ms in a real process.
+    def resolved_post_error_log_window_ms
+      return post_error_log_window_ms.to_i unless post_error_log_window_ms.nil?
+
+      test_mode ? 0 : 2_000
+    end
 
     def initialize
       @key = ENV["ALPLUS_KEY"]
@@ -47,6 +57,16 @@ module Alplus
       # Auto-breadcrumbs from `ActiveSupport::Notifications` (Rails only,
       # see `Railtie`). Ignored outside Rails.
       @breadcrumbs_enabled = true
+      # Log-line breadcrumbs from an attached logger (issue #47,
+      # `LoggerBreadcrumbs`; the Railtie attaches `Rails.logger`).
+      @logger_breadcrumbs_enabled = true
+      # Post-error log window in ms (issue #47): an exception item lingers
+      # this long so log lines written just after the error (Rails' own
+      # exception logging included) join its breadcrumb timeline, marked
+      # `after_error`. `0` disables. `nil` (the default) resolves to 0 in
+      # test mode -- specs that exercise the window opt in explicitly --
+      # and 2000 otherwise. `flush`/`close` seal pending items immediately.
+      @post_error_log_window_ms = nil
       # Injection point for the default `Transport`'s retry backoff sleep
       # (issue #15/#16 follow-up): overridable per-`Configuration` so a
       # spec exercising `Alplus.capture_exception`/`.heartbeat` against a
