@@ -78,7 +78,7 @@ module Alplus
     # literal, cross-language-reproducible frames instead of a real
     # backtrace tied to one language's stack-trace format.
     def exception_item(id:, exception:, config:, level: "error", context: nil, contexts: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic", fingerprint: nil, frames: nil)
-      frames ||= Stack.frames_for(exception, app_dirs: config.app_dirs)
+      frames ||= Stack.frames_for(exception, app_dirs: config.app_dirs, context_lines: config.context_lines.to_i)
       exc = { type: exception.class.name, value: cap_text(exception.message.to_s, MAX_EXCEPTION_VALUE_CHARS) }
       capped_frames = cap_frames(frames, MAX_STACK_TRACE_CHARS)
       exc[:stacktrace] = { frames: capped_frames } unless capped_frames.empty?

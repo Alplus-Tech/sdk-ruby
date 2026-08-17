@@ -52,6 +52,7 @@ module Alplus
       mark_session_outcome(level)
       fresh_id = Id.generate_event_id
       return fresh_id unless enabled?
+      return fresh_id if excluded?(exception)
 
       resolved = Dedup.resolve(exception, fresh_id)
       return resolved[:id] if resolved[:duplicate]
@@ -156,6 +157,10 @@ module Alplus
     # dedup registration, so it is not repeated here.
     def dispatch(_id)
       item = yield
+      item = Scrubber.scrub(item, @config.scrub_fields)
+      item = apply_before_send(item)
+      return unless item
+
       envelope = Envelope.wrap(config: @config, item: item)
 
       if @config.test_mode
@@ -165,6 +170,35 @@ module Alplus
       end
     rescue StandardError => e
       @config.logger&.warn("[alplus] capture failed internally; event dropped: #{e.class}: #{e.message}")
+    end
+
+    # Exception class name, or the name of any ancestor, matches
+    # `config.excluded_exceptions`. Never raises: an internal error (e.g. a
+    # weird `class.name` override) is treated as "not excluded" so a
+    # scrubbing bug in this check can never silently swallow a real error.
+    def excluded?(exception)
+      names = @config.excluded_exceptions
+      return false if names.nil? || names.empty?
+
+      exception.class.ancestors.any? { |ancestor| names.include?(ancestor.name) }
+    rescue StandardError
+      false
+    end
+
+    # `config.before_send` runs AFTER the built-in scrubber (`Scrubber`),
+    # so a custom callback still sees redacted secrets, not raw ones. A
+    # raising callback must never break capture: on error, the ORIGINAL
+    # (already-scrubbed) item is sent instead of the callback's output.
+    def apply_before_send(item)
+      callback = @config.before_send
+      return item unless callback
+
+      begin
+        callback.call(item)
+      rescue StandardError => e
+        @config.logger&.warn("[alplus] before_send raised; sending original event: #{e.class}: #{e.message}")
+        item
+      end
     end
   end
 end
