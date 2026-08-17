@@ -259,4 +259,76 @@ RSpec.describe Alplus::Envelope do
       expect(item[:exception][:stacktrace][:frames]).not_to be_empty
     end
   end
+
+  describe "cause chain" do
+    let(:config) { Alplus::Configuration.new }
+
+    def raise_wrapped
+      begin
+        begin
+          raise ArgumentError, "root cause"
+        rescue StandardError
+          raise TypeError, "middle wrapper"
+        end
+      rescue StandardError
+        raise "outer wrapper"
+      end
+    rescue StandardError => e
+      e
+    end
+
+    it "walks Exception#cause into the wire cause chain with frames" do
+      item = described_class.exception_item(id: "err_cause", exception: raise_wrapped, config: config)
+
+      outer = item[:exception]
+      expect(outer[:type]).to eq("RuntimeError")
+
+      middle = outer[:cause]
+      expect(middle[:type]).to eq("TypeError")
+      expect(middle[:value]).to eq("middle wrapper")
+      expect(middle[:stacktrace][:frames]).not_to be_empty
+
+      root = middle[:cause]
+      expect(root[:type]).to eq("ArgumentError")
+      expect(root[:value]).to eq("root cause")
+      expect(root[:cause]).to be_nil
+    end
+
+    it "bounds the chain at MAX_CAUSE_DEPTH causes" do
+      exception = nil
+      7.times do |n|
+        exception = begin
+          begin
+            raise "layer #{n}"
+          rescue StandardError
+            raise RuntimeError, "wrap #{n}", cause: exception
+          end
+        rescue StandardError => e
+          e
+        end
+      end
+
+      item = described_class.exception_item(id: "err_deep", exception: exception, config: config)
+
+      depth = 0
+      cursor = item[:exception][:cause]
+      while cursor
+        depth += 1
+        cursor = cursor[:cause]
+      end
+
+      expect(depth).to eq(described_class::MAX_CAUSE_DEPTH)
+    end
+
+    it "omits the cause key for a cause-less exception" do
+      exception = begin
+        raise "solo"
+      rescue StandardError => e
+        e
+      end
+
+      item = described_class.exception_item(id: "err_solo", exception: exception, config: config)
+      expect(item[:exception]).not_to have_key(:cause)
+    end
+  end
 end

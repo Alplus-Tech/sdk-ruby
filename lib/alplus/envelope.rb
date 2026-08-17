@@ -39,6 +39,10 @@ module Alplus
     # (`z.array(z.string().max(256)).min(1).max(16)`, issue #17).
     MAX_FINGERPRINT_ENTRIES = 16
     MAX_FINGERPRINT_CHARS = 256
+    # The server accepts an exception `cause` chain up to depth 5 counting
+    # the top-level exception (`Alplus.Observe.ErrorEnvelope`); walk at most
+    # 4 causes so a cyclic or absurd chain can never build an over-deep item.
+    MAX_CAUSE_DEPTH = 4
 
     module_function
 
@@ -82,9 +86,27 @@ module Alplus
       exc = { type: exception.class.name, value: cap_text(exception.message.to_s, MAX_EXCEPTION_VALUE_CHARS) }
       capped_frames = cap_frames(frames, MAX_STACK_TRACE_CHARS)
       exc[:stacktrace] = { frames: capped_frames } unless capped_frames.empty?
+      cause = build_cause(exception.cause, config, MAX_CAUSE_DEPTH)
+      exc[:cause] = cause if cause
 
       base_item(id: id, type: "exception", level: level, config: config, mechanism: mechanism, context: context, contexts: contexts, tags: tags, breadcrumbs: breadcrumbs, user: user, fingerprint: fingerprint)
         .merge(exception: exc)
+    end
+
+    # Walks `Exception#cause` into the wire `cause` chain (Honeybadger/
+    # Sentry-style "caused by"). Each cause carries its own type, message,
+    # and backtrace. Depth-bounded; a `cause` loop (possible via handwritten
+    # `cause` overrides) terminates at the bound instead of hanging.
+    def build_cause(exception, config, depth)
+      return nil if exception.nil? || depth <= 0
+
+      built = { type: exception.class.name, value: cap_text(exception.message.to_s, MAX_EXCEPTION_VALUE_CHARS) }
+      frames = Stack.frames_for(exception, app_dirs: config.app_dirs, context_lines: config.context_lines.to_i)
+      capped_frames = cap_frames(frames, MAX_STACK_TRACE_CHARS)
+      built[:stacktrace] = { frames: capped_frames } unless capped_frames.empty?
+      nested = build_cause(exception.cause, config, depth - 1)
+      built[:cause] = nested if nested
+      built
     end
 
     def message_item(id:, message:, config:, level: "info", context: nil, contexts: nil, tags: nil, breadcrumbs: nil, user: nil, mechanism: "generic", fingerprint: nil)

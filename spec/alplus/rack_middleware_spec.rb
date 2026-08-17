@@ -131,4 +131,78 @@ RSpec.describe Alplus::RackMiddleware do
       expect(seen_user).to be_nil
     end
   end
+
+  describe "request context" do
+    require "rack"
+
+    def env_for(path, query: "", method: "GET", extra: {})
+      {
+        "REQUEST_METHOD" => method,
+        "PATH_INFO" => path,
+        "QUERY_STRING" => query,
+        "SERVER_NAME" => "app.example",
+        "SERVER_PORT" => "443",
+        "rack.url_scheme" => "https",
+        "rack.input" => StringIO.new("")
+      }.merge(extra)
+    end
+
+    it "attaches method, query-stripped url, params, and allowlisted headers to a capture" do
+      raising_app = ->(_env) { raise "boom" }
+      middleware = described_class.new(raising_app)
+
+      # Concatenated at runtime: a plain literal would also appear in this
+      # spec file's own source lines, which the frames' source context
+      # legitimately captures, and the not-leaked assertion below would
+      # false-positive on it.
+      cookie_value = ["hidden", "cookie", "value"].join("-")
+      bearer_value = ["hidden", "bearer", "value"].join("-")
+
+      env = env_for("/orders", query: "coupon=SAVE10", extra: {
+                      "HTTP_USER_AGENT" => "TestBrowser/1.0",
+                      "HTTP_COOKIE" => "session=#{cookie_value}",
+                      "HTTP_AUTHORIZATION" => "Bearer #{bearer_value}"
+                    })
+
+      expect { middleware.call(env) }.to raise_error(RuntimeError)
+
+      item = Alplus.test_transport.envelopes.first[:items].first
+      request = item[:contexts]["request"]
+      expect(request[:method]).to eq("GET")
+      expect(request[:url]).to eq("https://app.example/orders")
+      expect(request[:url]).not_to include("coupon")
+      expect(request[:params]).to eq("coupon" => "SAVE10")
+      expect(request[:headers]).to eq("User-Agent" => "TestBrowser/1.0")
+      expect(JSON.generate(item)).not_to include(cookie_value, bearer_value)
+    end
+
+    it "merges form params and scrubs secret-keyed values before send" do
+      raising_app = ->(_env) { raise "boom" }
+      middleware = described_class.new(raising_app)
+
+      body = "password=hunter2&note=hello"
+      env = env_for("/login", method: "POST", extra: {
+                      "CONTENT_TYPE" => "application/x-www-form-urlencoded",
+                      "CONTENT_LENGTH" => body.bytesize.to_s,
+                      "rack.input" => StringIO.new(body)
+                    })
+
+      expect { middleware.call(env) }.to raise_error(RuntimeError)
+
+      item = Alplus.test_transport.envelopes.first[:items].first
+      params = item[:contexts]["request"][:params]
+      expect(params["note"]).to eq("hello")
+      expect(params["password"]).to eq("[FILTERED]")
+    end
+
+    it "captures without request context when the env is not a real Rack env" do
+      raising_app = ->(_env) { raise "boom" }
+      middleware = described_class.new(raising_app)
+
+      expect { middleware.call({}) }.to raise_error(RuntimeError)
+
+      item = Alplus.test_transport.envelopes.first[:items].first
+      expect(item[:exception][:type]).to eq("RuntimeError")
+    end
+  end
 end
