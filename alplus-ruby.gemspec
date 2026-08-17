@@ -36,4 +36,11 @@ Gem::Specification.new do |spec|
   # (spec/alplus/railtie_spec.rb) — never a runtime dependency.
   spec.add_development_dependency "railties", "~> 7.1"
   spec.add_development_dependency "actionpack", "~> 7.1"
+  # Dev-only, to exercise the OPTIONAL Sidekiq/ActiveJob integrations
+  # against the real libraries (spec/alplus/sidekiq_spec.rb,
+  # spec/alplus/active_job_spec.rb) — the integrations themselves only
+  # activate when `defined?(Sidekiq)`/`defined?(ActiveJob)` is true at
+  # runtime in the HOST app; this gem never requires either.
+  spec.add_development_dependency "sidekiq", "~> 7.3"
+  spec.add_development_dependency "activejob", "~> 7.1"
 end

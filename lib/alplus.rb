@@ -2,6 +2,7 @@
 
 require_relative "alplus/version"
 require_relative "alplus/id"
+require_relative "alplus/scrubber"
 require_relative "alplus/configuration"
 require_relative "alplus/stack"
 require_relative "alplus/envelope"
@@ -153,3 +154,24 @@ module Alplus
 end
 
 require_relative "alplus/railtie" if defined?(::Rails::Railtie)
+
+# Optional integrations (issue: SDK parity #4/#5): only loaded/activated
+# when the host app already loaded the corresponding library. Neither gem
+# is ever `require`d by this file, and this SDK never declares either as a
+# runtime dependency -- see `lib/alplus/sidekiq.rb`/`lib/alplus/active_job.rb`.
+#
+# This top-level block is the NON-RAILS fallback (or the case where the
+# host requires `sidekiq`/`active_job` before `alplus`). Under Rails,
+# `ActiveJob::Base` autoloads only after boot, so these `defined?` checks
+# are false when the gem loads; the Railtie re-runs the install after boot
+# with correct timing (see `railtie.rb`). `install!` is idempotent, so the
+# two paths never double-install.
+if defined?(::Sidekiq)
+  require_relative "alplus/sidekiq"
+  Alplus::Sidekiq.install!
+end
+
+if defined?(::ActiveJob::Base)
+  require_relative "alplus/active_job"
+  Alplus::ActiveJob.install!
+end

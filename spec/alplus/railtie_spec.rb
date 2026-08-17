@@ -3,6 +3,7 @@
 require "spec_helper"
 require "rails"
 require "action_controller/railtie"
+require "active_job/railtie"
 require "rack/test"
 require "logger"
 
@@ -39,8 +40,16 @@ RSpec.describe "Alplus Rails auto-capture", :aggregate_failures do
         config.secret_key_base = "railtie_spec_test_secret_key_base_0123456789"
         config.hosts.clear
         config.logger = Logger.new(IO::NULL)
+        config.active_job.queue_adapter = :inline
+        # GlobalID (pulled in by ActiveJob) rejects a blank/anonymous app
+        # name; this test app has none, so set one explicitly.
+        config.global_id.app = "alplus_railtie_spec"
         config.action_dispatch.show_exceptions = :all
-        config.consider_all_requests_local = false
+        # Development-like: `DebugExceptions` renders the developer error page
+        # and does NOT re-raise. This is the scenario that silently dropped
+        # unhandled web errors when the middleware sat outside
+        # `DebugExceptions` — the regression this spec now guards.
+        config.consider_all_requests_local = true
 
         routes.append do
           get "/boom", to: "railtie_spec#boom"
@@ -75,14 +84,16 @@ RSpec.describe "Alplus Rails auto-capture", :aggregate_failures do
     end
   end
 
-  it "installs Alplus::RackMiddleware inside ActionDispatch::ShowExceptions" do
+  it "installs Alplus::RackMiddleware inside ActionDispatch::DebugExceptions" do
     stack = Rails.application.middleware.map(&:klass)
-    show_exceptions_index = stack.index(ActionDispatch::ShowExceptions)
+    debug_exceptions_index = stack.index(ActionDispatch::DebugExceptions)
     alplus_index = stack.index(Alplus::RackMiddleware)
 
-    expect(show_exceptions_index).not_to be_nil
+    expect(debug_exceptions_index).not_to be_nil
     expect(alplus_index).not_to be_nil
-    expect(alplus_index).to be > show_exceptions_index
+    # Inside DebugExceptions (higher index = closer to the app), so the
+    # developer error page never swallows the exception before we capture it.
+    expect(alplus_index).to be > debug_exceptions_index
   end
 
   it "captures an unhandled exception raised by a controller action, with the app still returning its normal error response" do
@@ -106,5 +117,27 @@ RSpec.describe "Alplus Rails auto-capture", :aggregate_failures do
 
   it "sets app_dirs from Rails.root so controller frames are in_app" do
     expect(@railtie_detected_app_dirs).to eq([Rails.root.to_s])
+  end
+
+  # Guards the require-order regression: `ActiveJob::Base` autoloads only
+  # after boot, so the `defined?` check in `alplus.rb` is false at gem-load
+  # time. The Railtie must (re-)install via `ActiveSupport.on_load(:active_job)`
+  # so a real Rails app still gets job capture.
+  it "installs the ActiveJob integration via the Railtie's on_load hook" do
+    expect(ActiveJob::Base.ancestors).to include(Alplus::ActiveJob::ErrorReporting)
+  end
+
+  it "captures a raising ActiveJob and re-raises so retries still run" do
+    job_class = Class.new(ActiveJob::Base) do
+      def perform
+        raise "boom from a job"
+      end
+    end
+
+    expect { job_class.perform_now }.to raise_error("boom from a job")
+
+    item = Alplus.test_transport.envelopes.last[:items].first
+    expect(item[:mechanism]).to eq("active_job")
+    expect(item[:exception][:value]).to eq("boom from a job")
   end
 end
