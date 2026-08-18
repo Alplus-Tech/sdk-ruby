@@ -3,6 +3,9 @@
 require "webmock/rspec"
 require "alplus"
 
+contract_dir = File.expand_path("../../../sdks/contract", __dir__)
+ENV["ALPLUS_CONTRACT_DIR"] ||= contract_dir if File.directory?(contract_dir)
+
 WebMock.disable_net_connect!(allow_localhost: false)
 
 RSpec.configure do |config|

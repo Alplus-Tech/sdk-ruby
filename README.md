@@ -1,6 +1,6 @@
 # alplus-ruby
 
-Error reporting for [AL+ Observe](https://alplus.dev) — Ruby and Rails.
+Error reporting for [AL+ Observe](https://alplus.dev). Ruby and Rails.
 
 Zero runtime dependencies: `Net::HTTP` and the stdlib only.
 
@@ -11,18 +11,19 @@ Zero runtime dependencies: `Net::HTTP` and the stdlib only.
 gem "alplus-ruby", require: "alplus"
 ```
 
-## Configure
+Set `ALPLUS_KEY` (an ingest key with the `ingest` scope).
+
+## Rails
+
+Add the gem. The railtie installs `Alplus::RackMiddleware` and captures
+unhandled exceptions. No further wiring is required.
+
+Identify the current user in a `before_action`:
 
 ```ruby
-Alplus.configure do |config|
-  config.key = ENV["ALPLUS_KEY"]        # alp_... ingest key with the `ingest` scope
-  config.environment = "production"     # default: RAILS_ENV / RACK_ENV / "production"
-  config.release = ENV["GIT_SHA"]
-end
+Alplus.set_user(id: user.id, email: user.email)
+Alplus.set_tag("org_id", org.id)
 ```
-
-The key is read from `ALPLUS_KEY` by default. It is never logged or
-included in `Configuration#inspect`.
 
 ## Capture
 
@@ -36,13 +37,14 @@ end
 Alplus.capture_message("low disk space", level: "warning")
 ```
 
-Both methods return the client-generated `err_` event id synchronously and
-never raise, even if AL+ is unreachable.
+Both methods return an `err_` event id and never raise.
 
-## Rails
+## Heartbeat
 
-Add the gem; a railtie installs `Alplus::RackMiddleware` automatically and
-captures every unhandled exception. No further wiring is required.
+```ruby
+Alplus.heartbeat(token)
+Alplus.heartbeat(token, state: "fail")
+```
 
 ## Plain Rack
 
@@ -50,20 +52,38 @@ captures every unhandled exception. No further wiring is required.
 use Alplus::RackMiddleware
 ```
 
-## Test / development
+## Config
+
+The key is read from `ALPLUS_KEY` by default. It is never logged.
+
+```ruby
+Alplus.configure do |config|
+  config.environment = "production"
+  config.release = ENV["GIT_SHA"]
+  config.before_send = ->(item) { item }
+end
+```
+
+`before_send` receives the built item. Return `nil` to drop it. A raise
+sends the original item.
+
+## Tests
 
 ```ruby
 Alplus.configure { |c| c.test_mode = true }
+
+Alplus.capture_exception(error)
+Alplus.flush
+item = Alplus::Testing.events.first
 ```
 
-In test mode, events are recorded in memory (`Alplus.test_transport.envelopes`)
-and never sent over the network. Set `config.enabled = false` to disable
-capture entirely.
+Nothing hits the network. Set `config.enabled = false` to disable capture.
 
 ## Development
 
 ```
 cd sdks/ruby
 bundle install
+export ALPLUS_CONTRACT_DIR=../../sdks/contract
 bundle exec rspec
 ```

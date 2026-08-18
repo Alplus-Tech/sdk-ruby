@@ -145,15 +145,12 @@ module Alplus
       nil
     end
 
-    # The active transport (real `Transport` or, under `config.test_mode`,
-    # `TestTransport`). `Alplus.test_transport.envelopes` gives specs direct
-    # access to every envelope captured so far.
+    # :nodoc: host tests use `Alplus::Testing`.
     def test_transport
       client.transport
     end
 
-    # Test-only: drops the memoized client/configuration so the next access
-    # rebuilds them, and clears dedup state. Not needed in production code.
+    # :nodoc: host tests use `Alplus::Testing.reset!`.
     def reset!
       CLIENT_MUTEX.synchronize { @client = nil }
       @configuration = nil
@@ -162,6 +159,7 @@ module Alplus
   end
 end
 
+require_relative "alplus/testing"
 require_relative "alplus/railtie" if defined?(::Rails::Railtie)
 
 # Optional integrations (issue: SDK parity #4/#5): only loaded/activated
