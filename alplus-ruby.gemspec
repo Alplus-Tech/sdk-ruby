@@ -28,6 +28,9 @@ Gem::Specification.new do |spec|
   # Zero runtime dependencies by design (Net::HTTP + stdlib only), matching
   # the JS SDK's own "ships to third-party production apps" constraint.
 
+  # `bundle exec rake release` (bundler's gem tasks) is the documented release
+  # path, driven by rubygems/release-gem in .github/workflows/release.yml.
+  spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rspec", "~> 3.13"
   spec.add_development_dependency "webmock", "~> 3.24"
   spec.add_development_dependency "rack", "~> 3.0"
