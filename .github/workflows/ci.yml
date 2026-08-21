@@ -1,4 +1,4 @@
-# CI for the Ruby SDK (alplus-ruby), destined for Alplus-Tech/sdk-ruby.
+# CI for the Ruby SDK (postdeploy), destined for Alplus-Tech/sdk-ruby.
 # Lives inside sdks/ruby so it becomes the repo-root workflow after the split
 # (issue #26). GitHub ignores it in the monorepo (only repo-root workflows run).
 #
@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CONTRACT_REF: contract-v1.0.0
+  CONTRACT_REF: contract-v1.1.0
 
 jobs:
   test:
@@ -45,4 +45,4 @@ jobs:
         run: bundle exec rspec
 
       - name: Build the gem
-        run: gem build alplus-ruby.gemspec
+        run: gem build postdeploy.gemspec

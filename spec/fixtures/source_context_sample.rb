@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Fixture file for Stack source-context specs (spec/alplus/stack_spec.rb).
+# Fixture file for Stack source-context specs (spec/postdeploy/stack_spec.rb).
 # Line numbers below are load-bearing: the spec asserts on specific source
 # lines by number, so do not reformat this file.
 module SourceContextSample
