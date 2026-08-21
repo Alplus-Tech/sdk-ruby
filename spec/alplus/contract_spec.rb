@@ -24,7 +24,7 @@ RSpec.describe "golden envelope contract (issue #18)" do
   # consumed as an explicit, immutable input (issue #26): ALPLUS_CONTRACT_DIR
   # points at a checkout of `sdks/contract` at the pinned contract tag. There is
   # no monorepo-relative fallback -- an absent variable fails loudly.
-  contract_version = "1.0.0"
+  contract_version = "1.1.0"
 
   let(:contract_dir) do
     dir = ENV["ALPLUS_CONTRACT_DIR"]
