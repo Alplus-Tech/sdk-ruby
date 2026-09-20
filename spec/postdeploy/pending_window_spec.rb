@@ -33,6 +33,45 @@ RSpec.describe "post-error log window (issue #47)" do
     expect(after_crumb[:data]).to eq(after_error: true)
   end
 
+  it "scrubs secrets in after-error breadcrumbs at serialization" do
+    config = PostDeploy::Configuration.new.tap do |c|
+      c.key = "alp_p_test_key"
+      c.test_mode = true
+      c.post_error_log_window_ms = 10_000
+      c.scrub_fields = ["custom_secret"]
+    end
+    client = PostDeploy::Client.new(config)
+
+    client.capture_exception(RuntimeError.new("boom"))
+    client.notify_log_breadcrumb(
+      message: "after error",
+      data: {
+        password: "password-value",
+        token: "token-value",
+        authorization: "authorization-value",
+        cookie: "cookie-value",
+        custom_secret: "custom-value",
+        safe: "keep"
+      }
+    )
+    client.flush
+
+    envelope = client.transport.envelopes.first
+    serialized = JSON.generate(envelope)
+    crumb = envelope[:items].first[:breadcrumbs].find { |entry| entry[:message] == "after error" }
+
+    expect(serialized).not_to include("password-value", "token-value", "authorization-value", "cookie-value", "custom-value")
+    expect(crumb[:data]).to include(
+      password: "[FILTERED]",
+      token: "[FILTERED]",
+      authorization: "[FILTERED]",
+      cookie: "[FILTERED]",
+      custom_secret: "[FILTERED]",
+      safe: "keep",
+      after_error: true
+    )
+  end
+
   it "the sealer delivers on its own once the window elapses" do
     configure(30)
     PostDeploy.capture_exception(RuntimeError.new("boom"))

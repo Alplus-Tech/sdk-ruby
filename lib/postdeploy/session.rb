@@ -54,12 +54,11 @@ module PostDeploy
       end
     end
 
-    attr_reader :id, :status, :started_at
+    attr_reader :id, :status
 
     def initialize
       @id = Id.generate_session_id
       @status = :healthy
-      @started_at = Time.now.utc
     end
 
     # Marks the session `:errored`, unless it is already `:crashed`.

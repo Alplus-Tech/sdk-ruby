@@ -91,10 +91,12 @@ RSpec.describe PostDeploy::Heartbeat do
       expect(stub).to have_been_requested.times(2)
     end
 
-    it "an unrecognized token (404) is swallowed without raising and does not retry" do
-      stub = stub_request(:post, %r{\Ahttps://ingest\.example\.test/h/tok_unknown}).to_return(status: 404)
+    it "does not retry a non-transient client error" do
+      stub = stub_request(:post, %r{\Ahttps://ingest\.example\.test/h/tok_invalid})
+             .to_return(status: 409)
 
-      expect { described_class.ping("tok_unknown", config: config) }.not_to raise_error
+      described_class.ping("tok_invalid", config: config, sleeper: ->(_seconds) {})
+
       expect(stub).to have_been_requested.times(1)
     end
 
@@ -122,6 +124,30 @@ RSpec.describe PostDeploy::Heartbeat do
 
         expect(waited).to eq([described_class::HEARTBEAT_MAX_RETRY_AFTER_SECONDS.to_f])
       end
+      it "honors an integer Retry-After below the heartbeat cap" do
+        stub_request(:post, %r{\Ahttps://ingest\.example\.test/h/tok_integer})
+          .to_return({ status: 429, headers: { "Retry-After" => "1" } }, { status: 202 })
+        waited = []
+
+        described_class.ping("tok_integer", config: config, sleeper: ->(seconds) { waited << seconds })
+
+        expect(waited).to eq([1.0])
+      end
+
+      it "uses ordinary backoff for fractional and HTTP-date Retry-After values" do
+        ["1.5", "Wed, 21 Oct 2015 07:28:00 GMT"].each_with_index do |retry_after, index|
+          token = "tok_invalid_#{index}"
+          stub_request(:post, %r{\Ahttps://ingest\.example\.test/h/#{token}})
+            .to_return({ status: 429, headers: { "Retry-After" => retry_after } }, { status: 202 })
+          waited = []
+
+          described_class.ping(token, config: config, sleeper: ->(seconds) { waited << seconds })
+
+          expect(waited.length).to eq(1)
+          expect(waited.first).to be_between(0.25, 0.75)
+        end
+      end
+
 
       it "logs a warning when the retry budget is exhausted" do
         logger = instance_spy(Logger)
@@ -141,6 +167,20 @@ RSpec.describe PostDeploy::Heartbeat do
         described_class.ping("tok_recovers", config: config, sleeper: ->(_seconds) {})
 
         expect(logger).not_to have_received(:warn)
+      end
+
+      it "redacts the full token from exhaustion diagnostics" do
+        warning = nil
+        logger = double(Logger)
+        allow(logger).to receive(:warn) { |message| warning = message }
+        config.logger = logger
+        token = "hb_secret_token"
+        stub_request(:post, %r{\Ahttps://ingest\.example\.test/h/hb_secret_token}).to_return(status: 500)
+
+        described_class.ping(token, config: config, sleeper: ->(_seconds) {})
+
+        expect(warning).to include("heartbeat exhausted")
+        expect(warning).not_to include(token)
       end
     end
 

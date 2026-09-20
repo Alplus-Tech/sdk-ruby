@@ -37,7 +37,12 @@ module PostDeploy
     # can never be made to block anywhere near the server's full 30s cap.
     # Never raises: a block error on the final attempt is captured on the
     # returned `Result`, not re-raised.
-    def perform(sleeper: method(:sleep), max_attempts: MAX_ATTEMPTS, max_retry_after_seconds: MAX_RETRY_AFTER_SECONDS)
+    def perform(
+      sleeper: method(:sleep),
+      max_attempts: MAX_ATTEMPTS,
+      max_retry_after_seconds: MAX_RETRY_AFTER_SECONDS,
+      retryable_statuses: nil
+    )
       result = nil
 
       max_attempts.times do |i|
@@ -54,9 +59,19 @@ module PostDeploy
             return Result.new(outcome: :permanent, response: response)
           end
 
+          unless retryable_statuses.nil? || retryable_statuses.include?(code)
+            return Result.new(outcome: :permanent, response: response)
+          end
+
           result = Result.new(outcome: :exhausted, response: response)
           unless attempt == max_attempts
-            sleeper.call(code == 429 ? (retry_after_seconds(response, max_retry_after_seconds) || backoff_seconds(attempt)) : backoff_seconds(attempt))
+            delay =
+              if code == 429
+                retry_after_seconds(response, max_retry_after_seconds) || backoff_seconds(attempt)
+              else
+                backoff_seconds(attempt)
+              end
+            sleeper.call(delay)
           end
         rescue StandardError => e
           result = Result.new(outcome: :exhausted, error: e)
@@ -75,12 +90,9 @@ module PostDeploy
 
     def retry_after_seconds(response, max_seconds = MAX_RETRY_AFTER_SECONDS)
       value = response["Retry-After"]
-      return nil if value.nil? || value.strip.empty?
+      return nil unless value&.match?(/\A[0-9]+\z/)
 
-      seconds = Float(value, exception: false)
-      return nil if seconds.nil? || seconds.negative?
-
-      [seconds, max_seconds].min
+      [value.to_i, max_seconds].min
     end
   end
 end

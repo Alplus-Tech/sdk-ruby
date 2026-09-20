@@ -66,8 +66,6 @@ module PostDeploy
       {
         id: session.id,
         status: session.status.to_s,
-        started_at: session.started_at.iso8601,
-        duration_ms: ((Time.now.utc - session.started_at) * 1000).round,
         release: config.release,
         environment: config.environment
       }.compact

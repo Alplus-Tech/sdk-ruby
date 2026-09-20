@@ -87,12 +87,10 @@ module PostDeploy
       false
     end
 
-    # Pings PostDeploy Monitor's `GET|POST /h/:token` for cron/job liveness
-    # (issue #16): `state:` is `"start"`, `"finish"` (the default), or
-    # `"fail"`. Reuses the same retry/backoff as event delivery (`Retry`).
-    # Fail-safe: never raises into the caller, always returns `nil`.
-    def heartbeat(token, state: "finish")
-      Heartbeat.ping(token, state: state, config: configuration)
+    # `ping_id` is optional for legacy callers. When present, the server
+    # deduplicates it per monitor for 24 hours.
+    def heartbeat(token, state: "finish", ping_id: nil)
+      Heartbeat.ping(token, state: state, ping_id: ping_id, config: configuration)
       nil
     rescue StandardError
       nil

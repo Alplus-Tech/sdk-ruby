@@ -168,8 +168,7 @@ module PostDeploy
     # gate already ran in `capture_exception`/`capture_message` before
     # dedup registration, so it is not repeated here.
     def dispatch(_id)
-      item = yield
-      item = Scrubber.scrub(item, @config.scrub_fields)
+      item = scrub_item(yield)
       item = apply_before_send(item)
       return unless item
 
@@ -184,7 +183,15 @@ module PostDeploy
       @config.logger&.warn("[postdeploy] capture failed internally; event dropped: #{e.class}: #{e.message}")
     end
 
+    def scrub_item(item)
+      fields = Scrubber::DEFAULT_SCRUB_FIELDS | Array(@config.scrub_fields)
+      Scrubber.scrub(item, fields)
+    end
+
     def deliver_item(item)
+      # Scrub at the final item-to-envelope boundary as PendingWindow may have
+      # appended breadcrumbs after the capture-time scrub.
+      item = scrub_item(item)
       envelope = Envelope.wrap(config: @config, item: item)
 
       if @config.test_mode

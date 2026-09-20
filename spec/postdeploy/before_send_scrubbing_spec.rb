@@ -31,6 +31,17 @@ RSpec.describe "before_send hook, PII scrubbing, and excluded_exceptions" do
       expect(item[:tags]).to eq("scrubbed_by" => "before_send")
     end
 
+    it "scrubs sensitive fields added by the callback" do
+      config.before_send = lambda { |item|
+        item.merge(contexts: { request: { Password: "secret", nested: [{ api_key: "key" }] } })
+      }
+
+      client.capture_exception(RuntimeError.new("boom"))
+      item = client.transport.envelopes.first[:items].first
+
+      expect(item[:contexts]).to eq(request: { Password: "[FILTERED]", nested: [{ api_key: "[FILTERED]" }] })
+    end
+
     it "sends the original (scrubbed) item when the callback raises" do
       config.before_send = ->(_item) { raise "boom in before_send" }
 
@@ -96,23 +107,23 @@ RSpec.describe "before_send hook, PII scrubbing, and excluded_exceptions" do
       expect(item[:tags]["csrf_token"]).to eq("[FILTERED]")
     end
 
-    it "respects a custom config.scrub_fields list instead of the default" do
+    it "adds custom scrub fields without weakening the mandatory defaults" do
       config.scrub_fields = ["internal_id"]
 
       client.capture_exception(RuntimeError.new("boom"), context: { password: "hunter2", internal_id: "42" })
       item = client.transport.envelopes.first[:items].first
 
-      expect(item[:contexts][:extra][:password]).to eq("hunter2")
+      expect(item[:contexts][:extra][:password]).to eq("[FILTERED]")
       expect(item[:contexts][:extra][:internal_id]).to eq("[FILTERED]")
     end
 
-    it "disables scrubbing entirely when scrub_fields is empty" do
+    it "keeps mandatory defaults when custom scrub fields are empty" do
       config.scrub_fields = []
 
       client.capture_exception(RuntimeError.new("boom"), context: { password: "hunter2" })
       item = client.transport.envelopes.first[:items].first
 
-      expect(item[:contexts][:extra][:password]).to eq("hunter2")
+      expect(item[:contexts][:extra][:password]).to eq("[FILTERED]")
     end
   end
 

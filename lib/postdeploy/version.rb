@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module PostDeploy
-  VERSION = "0.2.0"
+  VERSION = "0.3.0"
   SDK_NAME = "postdeploy"
 
   # Sentinel default for `user:` on `Client#capture_exception`/

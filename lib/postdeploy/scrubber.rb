@@ -1,17 +1,17 @@
 # frozen_string_literal: true
 
 module PostDeploy
-  # Default PII scrubbing applied to every captured item BEFORE
-  # `config.before_send` runs (mirrors Sentry's built-in data scrubber).
+  # Mandatory PII scrubbing runs before `config.before_send` so callbacks see
+  # redacted values, and again immediately before serialization so callbacks
+  # and PendingWindow cannot add secrets after the capture-time pass.
   # Deep-walks `context`/`contexts`/`tags`/`user` (nested hashes and
   # arrays) and replaces any value whose key matches `config.scrub_fields`
   # (case-insensitive substring match, so `"user_password"` is caught by
   # the `"password"` entry) with `"[FILTERED]"`.
   #
   # Runs against the already-built wire item hash (post `Envelope.*_item`),
-  # not the raw call-site args -- one scrub point regardless of whether the
-  # value came from an explicit `context:`/`tags:`/`user:` argument or the
-  # ambient `Scope`.
+  # not the raw call-site args. The two boundary passes keep callback
+  # visibility safe while ensuring late breadcrumb additions are scrubbed.
   module Scrubber
     DEFAULT_SCRUB_FIELDS = %w[
       password passwd secret token authorization api_key apikey

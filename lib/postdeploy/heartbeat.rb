@@ -3,6 +3,7 @@
 require "net/http"
 require "uri"
 require "securerandom"
+require "timeout"
 
 module PostDeploy
   # Cron/job liveness pings against Monitor's `GET|POST /h/:token`
@@ -15,23 +16,18 @@ module PostDeploy
   # `Retry`'s comment on why Ruby shares this where the JS SDK deliberately
   # doesn't.
   #
-  # `PostDeploy.heartbeat` (the public entry point in `postdeploy.rb`) calls `ping`
-  # synchronously on the caller's thread: a cron/job runner is not a web
-  # request, and the caller (typically the very last statement of a job)
-  # wants the ping actually sent before the process exits, not fired into
-  # a background thread that may never run. This DOES block the caller
-  # briefly — bounded to `HEARTBEAT_MAX_ATTEMPTS` attempts and a
-  # `HEARTBEAT_MAX_RETRY_AFTER_SECONDS` cap on any 429 `Retry-After`
-  # (ignoring a server-requested wait beyond that), so a slow ingest
-  # endpoint can add at most ~2s, never `Transport`'s full ~30s budget.
+  # `PostDeploy.heartbeat` (the public entry point in `postdeploy.rb`) calls
+  # `ping` synchronously on the caller's thread. A cron/job runner wants the
+  # ping sent before the process exits, not left in a background thread that
+  # may never run. Each call is bounded to two five-second attempts and a
+  # two-second delta-seconds `Retry-After` cap, so a persistent failure blocks
+  # for at most about 12 seconds.
   module Heartbeat
     VALID_STATES = %w[start finish fail].freeze
     HEARTBEAT_MAX_ATTEMPTS = 2
     HEARTBEAT_MAX_RETRY_AFTER_SECONDS = 2
-
-    # Matches the JS SDK's `PING_ID_PATTERN` shape closely enough for a
-    # server-side idempotency key; not validated against a caller-supplied
-    # override here since nothing in this SDK accepts one from outside yet.
+    HEARTBEAT_ATTEMPT_TIMEOUT_SECONDS = 5
+    HEARTBEAT_RETRYABLE_STATUSES = [408, 429].concat((500..599).to_a).freeze
     module_function
 
     # Never raises: an internal error, network failure, or retryable
@@ -52,16 +48,19 @@ module PostDeploy
       result = Retry.perform(
         sleeper: sleeper,
         max_attempts: HEARTBEAT_MAX_ATTEMPTS,
-        max_retry_after_seconds: HEARTBEAT_MAX_RETRY_AFTER_SECONDS
+        max_retry_after_seconds: HEARTBEAT_MAX_RETRY_AFTER_SECONDS,
+        retryable_statuses: HEARTBEAT_RETRYABLE_STATUSES
       ) { |_attempt| post(uri, config) }
 
       if result.outcome == :exhausted
         detail = result.error ? "#{result.error.class}: #{result.error.message}" : "status #{result.response&.code}"
-        config.logger&.warn("[postdeploy] heartbeat exhausted #{HEARTBEAT_MAX_ATTEMPTS} attempt(s) (token #{token.inspect}, state #{resolved_state.inspect}): #{detail}")
+        detail = detail.gsub(token.to_s, "[REDACTED]")
+        config.logger&.warn("[postdeploy] heartbeat exhausted #{HEARTBEAT_MAX_ATTEMPTS} attempt(s) (token [REDACTED], state #{resolved_state.inspect}): #{detail}")
       end
       nil
     rescue StandardError => e
-      config.logger&.warn("[postdeploy] heartbeat failed internally: #{e.class}: #{e.message}")
+      detail = e.message.to_s.gsub(token.to_s, "[REDACTED]")
+      config.logger&.warn("[postdeploy] heartbeat failed internally: #{e.class}: #{detail}")
       nil
     end
 
@@ -81,10 +80,14 @@ module PostDeploy
     def post(uri, config)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = uri.scheme == "https"
-      http.open_timeout = config.open_timeout
-      http.read_timeout = config.read_timeout
+      timeout = [config.open_timeout.to_f, HEARTBEAT_ATTEMPT_TIMEOUT_SECONDS].min
+      read_timeout = [config.read_timeout.to_f, HEARTBEAT_ATTEMPT_TIMEOUT_SECONDS].min
+      http.open_timeout = timeout
+      http.read_timeout = read_timeout
 
-      http.request(Net::HTTP::Post.new(uri.request_uri))
+      Timeout.timeout(HEARTBEAT_ATTEMPT_TIMEOUT_SECONDS) do
+        http.request(Net::HTTP::Post.new(uri.request_uri))
+      end
     end
   end
 end

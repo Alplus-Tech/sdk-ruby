@@ -24,7 +24,14 @@ RSpec.describe "golden envelope contract (issue #18)" do
   # consumed as an explicit, immutable input (issue #26): ALPLUS_CONTRACT_DIR
   # points at a checkout of `sdks/contract` at the pinned contract tag. There is
   # no monorepo-relative fallback -- an absent variable fails loudly.
-  contract_version = "1.1.0"
+  contract_version = "2.0.0"
+  expected_digests = {
+    "exception_item.json" => "sha256:a970a83c0b7f8a1d74b8602afd886941634c711e600e41e2dc6ea579f868a380",
+    "message_item.json" => "sha256:0f14c4f20605fed9a844646905047835033a7c6ade38fc1cb1d7da0158362e8f",
+    "measure_event.json" => "sha256:132914d7468c8909baad2509bfb17de8ee30d585259c783a72d21f9446b6a483",
+    "session_item.json" => "sha256:3bfe1d1458a03a3ced1b725c86d2a9aabbd57129f7aeb6a529d2d923ede8ec40"
+  }.freeze
+
 
   let(:contract_dir) do
     dir = ENV["ALPLUS_CONTRACT_DIR"]
@@ -34,12 +41,19 @@ RSpec.describe "golden envelope contract (issue #18)" do
     end
 
     manifest = JSON.parse(File.read(File.join(dir, "manifest.json")))
-    unless manifest["version"] == contract_version
-      raise "contract version mismatch: pinned #{contract_version}, got #{manifest["version"]}"
+    unless manifest["version"] == contract_version && manifest["items"] == expected_digests
+      raise "contract version or independently pinned digest mismatch"
     end
 
-    manifest["items"].each do |name, expected|
-      actual = "sha256:#{Digest::SHA256.hexdigest(File.read(File.join(dir, name)))}"
+    checksum_file = File.readlines(File.join(dir, "SHA256SUMS")).to_h do |line|
+      digest, name = line.strip.split(/\s+/, 2)
+      [name, "sha256:#{digest}"]
+    end
+
+    expected_digests.each do |name, expected|
+      raise "contract SHA256SUMS mismatch for #{name}" unless checksum_file[name] == expected
+
+      actual = "sha256:#{Digest::SHA256.hexdigest(File.binread(File.join(dir, name)))}"
       unless actual == expected
         raise "contract checksum mismatch for #{name}: expected #{expected}, got #{actual}"
       end
@@ -47,7 +61,7 @@ RSpec.describe "golden envelope contract (issue #18)" do
 
     dir
   end
-  let(:non_deterministic_keys) { %i[id timestamp started_at duration_ms] }
+  let(:non_deterministic_keys) { %i[id timestamp] }
 
   let(:config) do
     PostDeploy::Configuration.new.tap do |c|

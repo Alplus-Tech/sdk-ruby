@@ -4,6 +4,8 @@ Error reporting for [PostDeploy Observe](https://postdeploy.dev). Ruby and Rails
 
 Zero runtime dependencies: `Net::HTTP` and the stdlib only.
 
+Setup guide: [Ruby and Rails error tracking](https://postdeploy.dev/docs/observe/ruby).
+
 ## Install
 
 ```ruby
@@ -43,8 +45,15 @@ Both methods return an `err_` event id and never raise.
 
 ```ruby
 PostDeploy.heartbeat(token)
-PostDeploy.heartbeat(token, state: "fail")
+PostDeploy.heartbeat(token, state: "fail", ping_id: "nightly-2026-08-30")
 ```
+
+Heartbeat calls never raise. Each call makes at most two attempts and reuses
+one `ping_id` across retries. The server deduplicates a supplied ID per monitor
+for 24 hours. Transport failures, `408`, `429`, and `5xx` responses retry only.
+Each attempt is bounded to five seconds. Delta-seconds `Retry-After` is capped
+at two seconds; other retries use jittered backoff around 500ms. Diagnostics
+never include the full heartbeat token.
 
 ## Plain Rack
 
