@@ -1,5 +1,7 @@
 # postdeploy
 
+> **Retired.** This SDK is no longer maintained and receives no updates. PostDeploy accepts events from the official Sentry SDKs. Install `sentry-ruby` and use the DSN that PostDeploy shows for your source. See https://postdeploy.dev/docs.
+
 Error reporting for [PostDeploy Observe](https://postdeploy.dev). Ruby and Rails.
 
 Zero runtime dependencies: `Net::HTTP` and the stdlib only.
