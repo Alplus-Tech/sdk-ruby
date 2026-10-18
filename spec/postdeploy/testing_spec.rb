@@ -13,15 +13,6 @@ RSpec.describe PostDeploy::Testing do
 
   it "returns an empty list when nothing was captured" do
     expect(described_class.events).to eq([])
-    expect(described_class.sessions).to eq([])
-  end
-
-  it "records a closed session item" do
-    PostDeploy::Session.with_clean_session do
-      PostDeploy.close_session
-    end
-    PostDeploy.flush
-    expect(described_class.sessions.first[:id]).to start_with("ses_")
   end
 
   it "reset! clears recorded envelopes" do

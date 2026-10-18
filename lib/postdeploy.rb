@@ -11,12 +11,10 @@ require_relative "postdeploy/transport"
 require_relative "postdeploy/worker"
 require_relative "postdeploy/dedup"
 require_relative "postdeploy/scope"
-require_relative "postdeploy/session"
 require_relative "postdeploy/pending_window"
 require_relative "postdeploy/client"
 require_relative "postdeploy/logger_breadcrumbs"
 require_relative "postdeploy/rack_middleware"
-require_relative "postdeploy/heartbeat"
 
 # Error reporting for `POST /e/errors` on PostDeploy Observe. Mirrors the wire
 # contract of `@postdeploy/sdk` (TypeScript) and the Elixir SDK (see
@@ -87,15 +85,6 @@ module PostDeploy
       false
     end
 
-    # `ping_id` is optional for legacy callers. When present, the server
-    # deduplicates it per monitor for 24 hours.
-    def heartbeat(token, state: "finish", ping_id: nil)
-      Heartbeat.ping(token, state: state, ping_id: ping_id, config: configuration)
-      nil
-    rescue StandardError
-      nil
-    end
-
     # Request-scoped scope ergonomics (issue #17): set once (typically at
     # the top of a request, e.g. in a `before_action`) and applied to every
     # `capture_exception`/`capture_message` call for the rest of the
@@ -123,21 +112,6 @@ module PostDeploy
 
     def add_breadcrumb(message: nil, category: nil, level: nil, data: nil, ts: nil)
       Scope.current.add_breadcrumb(message: message, category: category, level: level, data: data, ts: ts)
-      nil
-    rescue StandardError
-      nil
-    end
-
-    # Closes the current thread's request-scoped `Session` (issue #12), if
-    # one is active (see `RackMiddleware`): reports it to
-    # `POST /e/sessions` via `Client#report_session`. A no-op if no session
-    # is active. Fail-safe: never raises. Not typically called directly —
-    # `RackMiddleware` calls this once `@app.call` returns or raises.
-    def close_session
-      session = Session.current
-      return nil unless session
-
-      client.report_session(session)
       nil
     rescue StandardError
       nil

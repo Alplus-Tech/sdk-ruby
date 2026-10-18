@@ -12,10 +12,6 @@ module PostDeploy
       Array(transport&.envelopes).flat_map { |envelope| envelope[:items] || [] }
     end
 
-    def self.sessions
-      Array(transport&.session_envelopes).flat_map { |envelope| envelope[:items] || [] }
-    end
-
     def self.reset!
       PostDeploy.reset!
     end

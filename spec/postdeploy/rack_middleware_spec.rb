@@ -38,62 +38,6 @@ RSpec.describe PostDeploy::RackMiddleware do
     expect(PostDeploy.test_transport.envelopes).to be_empty
   end
 
-  describe "session lifecycle (issue #12)" do
-    after { Thread.current[:postdeploy_session] = nil }
-
-    it "reports a healthy session when the app completes without a captured error" do
-      ok_app = ->(_env) { [200, {}, ["ok"]] }
-      middleware = described_class.new(ok_app)
-
-      middleware.call({})
-
-      expect(PostDeploy.test_transport.session_envelopes.length).to eq(1)
-      item = PostDeploy.test_transport.session_envelopes.first[:items].first
-      expect(item[:status]).to eq("healthy")
-      expect(item[:id]).to start_with("ses_")
-      expect(Thread.current[:postdeploy_session]).to be_nil
-    end
-
-    it "reports an errored session when a handled error is captured during the request" do
-      app = lambda { |_env|
-        PostDeploy.capture_exception(RuntimeError.new("handled"))
-        [200, {}, ["ok"]]
-      }
-      middleware = described_class.new(app)
-
-      middleware.call({})
-
-      item = PostDeploy.test_transport.session_envelopes.first[:items].first
-      expect(item[:status]).to eq("errored")
-    end
-
-    it "reports a crashed session, not merely errored, when the app raises unhandled" do
-      raising_app = ->(_env) { raise "boom from the app" }
-      middleware = described_class.new(raising_app)
-
-      expect { middleware.call({}) }.to raise_error(RuntimeError)
-
-      item = PostDeploy.test_transport.session_envelopes.first[:items].first
-      expect(item[:status]).to eq("crashed")
-    end
-
-    it "does not leak a session from one request into the next on a reused thread" do
-      call_count = 0
-      seen_session_in_second_request = :not_checked
-      app = lambda { |_env|
-        call_count += 1
-        seen_session_in_second_request = PostDeploy::Session.current.status if call_count == 2
-        [200, {}, ["ok"]]
-      }
-      middleware = described_class.new(app)
-
-      middleware.call({}) # request one: healthy session closes and clears
-      middleware.call({}) # request two: must start fresh, not see request one's closed session
-
-      expect(seen_session_in_second_request).to eq(:healthy)
-    end
-  end
-
   describe "scope isolation across requests on a reused thread (issue #17)" do
     after { Thread.current[:postdeploy_scope] = nil }
 

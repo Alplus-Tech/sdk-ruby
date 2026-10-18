@@ -9,8 +9,8 @@ Gem::Specification.new do |spec|
   spec.email = ["support@postdeploy.dev"]
 
   spec.summary = "Ruby instrumentation for PostDeploy"
-  spec.description = "Captures errors and operational signals for PostDeploy's production toolkit " \
-                      "ingest endpoint, with an optional Rails railtie for automatic unhandled-exception capture."
+  spec.description = "Captures errors for PostDeploy's ingest endpoint, with an optional Rails " \
+                      "railtie for automatic unhandled-exception capture."
   spec.homepage = "https://postdeploy.dev"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.0"

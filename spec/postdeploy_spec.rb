@@ -80,28 +80,6 @@ RSpec.describe PostDeploy do
     end
   end
 
-  describe ".heartbeat" do
-    it "never raises and returns nil" do
-      stub_request(:post, %r{\Ahttps://ingest\.postdeploy\.dev/h/}).to_return(status: 202)
-      expect(described_class.heartbeat("hb_x")).to be_nil
-      expect(described_class.heartbeat("hb_x", state: "fail")).to be_nil
-    end
-  end
-
-  describe ".close_session" do
-    it "is a no-op when no session is open" do
-      expect(described_class.close_session).to be_nil
-    end
-
-    it "reports the current session when one is open" do
-      PostDeploy::Session.with_clean_session do
-        expect(described_class.close_session).to be_nil
-      end
-      described_class.flush
-      expect(described_class.test_transport.session_envelopes).not_to be_empty
-    end
-  end
-
   describe ".initialized_client" do
     it "is nil until the first capture constructs a client" do
       described_class.reset!

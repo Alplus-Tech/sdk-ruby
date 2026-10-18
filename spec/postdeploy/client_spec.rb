@@ -208,68 +208,6 @@ RSpec.describe PostDeploy::Client do
     end
   end
 
-  describe "#report_session (issue #12)" do
-    let(:config) do
-      PostDeploy::Configuration.new.tap do |c|
-        c.key = "alp_p_test_key"
-        c.test_mode = true
-      end
-    end
-    let(:client) { described_class.new(config) }
-
-    it "records the session envelope synchronously in the in-memory test transport" do
-      session = PostDeploy::Session.new
-      client.report_session(session)
-
-      expect(client.transport.session_envelopes.length).to eq(1)
-      expect(client.transport.envelopes).to be_empty
-      item = client.transport.session_envelopes.first[:items].first
-      expect(item[:id]).to eq(session.id)
-      expect(item[:status]).to eq("healthy")
-    end
-
-    it "delivers a session while an /e/errors send is still stuck in flight (issue #12 fix)" do
-      async_config = PostDeploy::Configuration.new.tap do |c|
-        c.key = "alp_p_test_key"
-        c.endpoint = "https://ingest.example.test"
-        c.sleeper = ->(_seconds) {}
-      end
-      async_client = described_class.new(async_config)
-
-      gate = Queue.new
-      stub_request(:post, "https://ingest.example.test/e/errors").to_return do
-        gate.pop # blocks the :error worker thread until released below
-        { status: 202 }
-      end
-      session_received = Queue.new
-      session_stub = stub_request(:post, "https://ingest.example.test/e/sessions").to_return do
-        session_received.push(:received)
-        { status: 202 }
-      end
-
-      async_client.capture_exception(RuntimeError.new("stuck")) # occupies the :error lane
-
-      session = PostDeploy::Session.new
-      enqueued = async_client.report_session(session)
-      expect(enqueued).to be true # never blocks on the stuck :error lane
-
-      expect(session_received.pop(timeout: 2)).to eq(:received)
-      expect(session_stub).to have_been_requested.times(1)
-
-      gate.push(:go) # release the stuck send so the example doesn't leak a hung thread
-      async_client.flush(timeout: 2)
-    end
-
-    it "is a no-op when the config is invalid (no key)" do
-      invalid_config = PostDeploy::Configuration.new.tap { |c| c.key = nil; c.test_mode = true }
-      invalid_client = described_class.new(invalid_config)
-
-      invalid_client.report_session(PostDeploy::Session.new)
-
-      expect(invalid_client.transport.session_envelopes).to be_empty
-    end
-  end
-
   describe "the enabled flag" do
     let(:config) do
       PostDeploy::Configuration.new.tap do |c|

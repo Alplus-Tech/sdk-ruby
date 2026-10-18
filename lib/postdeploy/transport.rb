@@ -14,7 +14,7 @@ module PostDeploy
   #
   # Retries a transient failure up to `Retry::MAX_ATTEMPTS` times with
   # jittered exponential backoff, honoring a 429's `Retry-After` header
-  # (issue #15) — see `Retry` for the shared loop with `Heartbeat`. Runs on
+  # (issue #15) — see `Retry`. Runs on
   # the existing background `Worker` thread, never the request thread.
   class Transport
     def initialize(config, sleeper: method(:sleep))
@@ -22,24 +22,16 @@ module PostDeploy
       @sleeper = sleeper
     end
 
-    # `kind:` selects the ingest path (issue #12): `:error` (default) posts
-    # to `POST /e/errors`, `:session` to `POST /e/sessions`. The error
-    # envelope's shape and endpoint are unchanged — this is purely additive
-    # routing on the same `Worker` queue/thread.
-    def send_envelope(envelope, kind: :error)
+    def send_envelope(envelope)
       body = JSON.generate(envelope)
       return :oversized if body.bytesize > Envelope::MAX_ENVELOPE_BYTES
 
-      uri = URI.join(@config.endpoint, path_for(kind))
+      uri = URI.join(@config.endpoint, "/e/errors")
       result = Retry.perform(sleeper: @sleeper) { post(uri, body) }
       outcome(result)
     end
 
     private
-
-    def path_for(kind)
-      kind == :session ? "/e/sessions" : "/e/errors"
-    end
 
     def post(uri, body)
       http = Net::HTTP.new(uri.host, uri.port)
@@ -75,30 +67,19 @@ module PostDeploy
   # can assert on the exact shape without a stubbed HTTP endpoint —
   # `PostDeploy.test_transport.envelopes` (issue #14 story 9).
   class TestTransport
-    attr_reader :envelopes, :session_envelopes
+    attr_reader :envelopes
 
     def initialize(*)
       @envelopes = []
-      @session_envelopes = []
     end
 
-    # `kind:` mirrors `Transport#send_envelope` (issue #12): a `:session`
-    # envelope records to `session_envelopes` instead of `envelopes`, so
-    # existing specs asserting on `envelopes` (error envelopes only) are
-    # unaffected by session traffic.
-    def send_envelope(envelope, kind: :error)
-      if kind == :session
-        @session_envelopes << envelope
-      else
-        @envelopes << envelope
-      end
-
+    def send_envelope(envelope)
+      @envelopes << envelope
       :sent
     end
 
     def clear
       @envelopes.clear
-      @session_envelopes.clear
     end
   end
 end

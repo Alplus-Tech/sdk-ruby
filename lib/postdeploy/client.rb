@@ -20,12 +20,7 @@ module PostDeploy
     def initialize(config, sleeper: config.sleeper)
       @config = config
       @transport = config.transport || (config.test_mode ? TestTransport.new : Transport.new(config, sleeper: sleeper))
-      @worker = Worker.new(config, @transport, kind: :error)
-      # A SEPARATE worker (own queue, own thread) from `@worker` (issue
-      # #12 fix): see `Worker`'s class doc for why sharing one lane with
-      # error delivery was a defect (head-of-line blocking + silent drops
-      # under an error storm, exactly when crash-free data matters).
-      @session_worker = Worker.new(config, @transport, kind: :session)
+      @worker = Worker.new(config, @transport)
 
       @pending_window =
         PendingWindow.new(config.resolved_post_error_log_window_ms) { |item| deliver_item(item) }
@@ -52,7 +47,6 @@ module PostDeploy
     # not `nil`, so a caller CAN pass `user: nil` to explicitly clear the
     # ambient user for one capture.
     def capture_exception(exception, level: "error", context: nil, contexts: nil, tags: nil, breadcrumbs: nil, user: PostDeploy::UNSET, mechanism: "generic", fingerprint: nil)
-      mark_session_outcome(level)
       fresh_id = Id.generate_event_id
       return fresh_id unless enabled?
       return fresh_id if excluded?(exception)
@@ -66,7 +60,6 @@ module PostDeploy
     end
 
     def capture_message(message, level: "info", context: nil, contexts: nil, tags: nil, breadcrumbs: nil, user: PostDeploy::UNSET, mechanism: "generic", fingerprint: nil)
-      mark_session_outcome(level)
       id = Id.generate_event_id
       return id unless enabled?
 
@@ -74,18 +67,11 @@ module PostDeploy
       id
     end
 
-    # Flushes BOTH delivery lanes (issue #12: error and session are
-    # independent workers). A slow/stuck error lane still bounds this call
-    # by `timeout` for the session lane's own drain -- each `Worker#flush`
-    # call gets the full `timeout` budget rather than splitting it, since a
-    # caller flushing wants both drained, not a race between them.
     def flush(timeout: 2)
       # Seal the post-error log window first: flush means "send now with
       # whatever after-lines were collected so far", never "wait".
       @pending_window.seal_all!
-      error_flushed = @worker.flush(timeout: timeout)
-      session_flushed = @session_worker.flush(timeout: timeout)
-      error_flushed && session_flushed
+      @worker.flush(timeout: timeout)
     rescue StandardError
       false
     end
@@ -96,41 +82,7 @@ module PostDeploy
       @pending_window.notify_log_breadcrumb(crumb)
     end
 
-    # Reports a closed `Session` (issue #12) to `POST /e/sessions`, on its
-    # OWN background `Worker` (own queue, own thread) so a slow/failing
-    # `/e/errors` delivery can never delay or drop a queued session, or
-    # vice versa -- see `Worker`'s class doc. Unlike `capture_exception`/
-    # `capture_message`, never sampled or deduped — an accurate crash-free
-    # percentage needs every session counted, not a sample of them. Only
-    # gated on `config.valid?` (configured + enabled). Fail-safe: never
-    # raises.
-    def report_session(session)
-      return false unless @config.valid?
-
-      envelope = Envelope.wrap(config: @config, item: Envelope.session_item(session: session, config: @config))
-
-      if @config.test_mode
-        @transport.send_envelope(envelope, kind: :session)
-      else
-        @session_worker.enqueue(envelope)
-      end
-    rescue StandardError => e
-      @config.logger&.warn("[postdeploy] session report failed internally; dropped: #{e.class}: #{e.message}")
-      false
-    end
-
     private
-
-    # Any `"error"`/`"fatal"`-level capture during the current request
-    # marks its `Session` (at least) `:errored` (issue #12) — a no-op if
-    # the session is already `:crashed`, or if no session is active (e.g.
-    # a background job, not a request under `RackMiddleware`). Runs
-    # BEFORE the `enabled?`/sampling gate below: whether or not this
-    # particular capture gets sent to `/e/errors`, the request genuinely
-    # did produce a handled error.
-    def mark_session_outcome(level)
-      Session.current&.mark_errored if %w[error fatal].include?(level.to_s)
-    end
 
     # Single evaluation point for "would this capture actually be sent":
     # `config.sampled?` draws a random number, so it must be called

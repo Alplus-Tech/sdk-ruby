@@ -57,20 +57,6 @@ module PostDeploy
       }
     end
 
-    # Builds a `POST /e/sessions` wire item (issue #12) from an
-    # `PostDeploy::Session`. Carries no PII: `session.id` is opaque and used
-    # server-side only for in-window ingest dedup, then discarded (never
-    # stored raw) — matching `Alplus.Observe.SessionEnvelope`, the server
-    # parser.
-    def session_item(session:, config:)
-      {
-        id: session.id,
-        status: session.status.to_s,
-        release: config.release,
-        environment: config.environment
-      }.compact
-    end
-
     # `frames:` overrides the normal `Stack.frames_for(exception, ...)`
     # capture with an already-built wire frame array, for callers that
     # already have wire-shaped frames (mirrors the Elixir SDK's

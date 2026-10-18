@@ -41,20 +41,6 @@ PostDeploy.capture_message("low disk space", level: "warning")
 
 Both methods return an `err_` event id and never raise.
 
-## Heartbeat
-
-```ruby
-PostDeploy.heartbeat(token)
-PostDeploy.heartbeat(token, state: "fail", ping_id: "nightly-2026-08-30")
-```
-
-Heartbeat calls never raise. Each call makes at most two attempts and reuses
-one `ping_id` across retries. The server deduplicates a supplied ID per monitor
-for 24 hours. Transport failures, `408`, `429`, and `5xx` responses retry only.
-Each attempt is bounded to five seconds. Delta-seconds `Retry-After` is capped
-at two seconds; other retries use jittered backoff around 500ms. Diagnostics
-never include the full heartbeat token.
-
 ## Plain Rack
 
 ```ruby

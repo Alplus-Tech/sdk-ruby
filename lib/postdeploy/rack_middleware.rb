@@ -13,22 +13,13 @@ module PostDeploy
   # threads across requests, so without this a `set_user`/`set_tag` call in
   # request A would otherwise still be visible to request B if it happens
   # to land on the same thread.
-  #
-  # Session lifecycle (issue #12): opens a fresh request-scoped `Session`
-  # (`Session.with_clean_session`, the same reused-thread guard as `Scope`
-  # above) and closes it (`PostDeploy.close_session`) once `@app.call` returns
-  # OR raises. Unlike `sdks/elixir/lib/post_deploy/plug.ex` (which cannot
-  # rescue a downstream plug's exception — see that module's moduledoc),
-  # Rack middleware genuinely wraps the rest of the stack in one method
-  # call, so `rescue`/`ensure` here is the complete, reliable crash signal:
-  # no separate telemetry hook is needed.
   class RackMiddleware
     def initialize(app)
       @app = app
     end
 
     def call(env)
-      Scope.with_clean_scope { Session.with_clean_session { call_app(env) } }
+      Scope.with_clean_scope { call_app(env) }
     end
 
     private
@@ -39,16 +30,9 @@ module PostDeploy
     rescue StandardError => e
       # StandardError only, deliberately: SystemExit/SignalException/
       # NoMemoryError are process-control exceptions, not app errors, and
-      # must propagate untouched. `mark_crashed` runs BEFORE
-      # `capture_exception` below: that call would otherwise mark the
-      # session merely `:errored` (any `"error"`-level capture does), and
-      # `:crashed` must win regardless of call order — `Session`'s
-      # severity ordering makes this safe either way.
-      Session.current&.mark_crashed
+      # must propagate untouched.
       PostDeploy.capture_exception(e, mechanism: "rack.middleware")
       raise
-    ensure
-      PostDeploy.close_session
     end
 
     # Response headers a triaging dev actually reads. Cookie and

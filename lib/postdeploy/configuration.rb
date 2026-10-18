@@ -69,7 +69,7 @@ module PostDeploy
       @post_error_log_window_ms = nil
       # Injection point for the default `Transport`'s retry backoff sleep
       # (issue #15/#16 follow-up): overridable per-`Configuration` so a
-      # spec exercising `PostDeploy.capture_exception`/`.heartbeat` against a
+      # spec exercising `PostDeploy.capture_exception` against a
       # retried response never waits on real wall-clock backoff.
       @sleeper = method(:sleep)
     end
